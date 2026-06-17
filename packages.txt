@@ -10,7 +10,6 @@ libxrandr2
 libgbm1
 libxkbcommon0
 libasound2
-libcups2
 libcairo2
 libpango-1.0-0
 libx11-xcb1
