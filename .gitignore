@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+.venv/
+.venv312/
+.git_broken/
+.DS_Store
+
+# Local curator worklists and generated scrape outputs
+protein_names.txt
+protein_ids.txt
+protein_ids_resolved.txt
+resolved_protein_ids.csv
+selected_protein_ids.txt
+selected_resolved_protein_ids.csv
+agentic_lookup_state.json
+agentic_resolved_protein_ids.csv
+dashboard_agentic_lookup_state.json
+dashboard_protein_ids.txt
+dashboard_resolved_protein_ids.csv
+agent_tool_lookup_state.json
+agent_tool_protein_ids.txt
+agent_tool_resolved_protein_ids.csv
+site_ids.txt
+*.csv
+*.bad_inode
+
+# Keep lightweight curated protein ID cache, but not bulky scrape outputs.
+!curated_protein_ids/
+!curated_protein_ids/resolved_protein_ids.csv
+!curated_protein_ids/lookup_state.json
+!curated_protein_ids/protein_ids.txt
