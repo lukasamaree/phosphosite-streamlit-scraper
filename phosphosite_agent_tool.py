@@ -140,6 +140,7 @@ async def resolve_ids(args):
             attempts=args.attempts,
             delay=args.delay,
             backoff=args.backoff,
+            cloudflare_cooldown=args.cloudflare_cooldown,
             organism="human",
         )
         await run_agentic_lookup(names_to_resolve, args.lookup_csv, args.state_json, config)
@@ -161,6 +162,7 @@ async def scrape_ids(args):
                 attempts=args.attempts,
                 delay=args.delay,
                 backoff=args.backoff,
+                cloudflare_cooldown=args.cloudflare_cooldown,
                 organism="human",
             )
             await run_agentic_lookup(missing_names, args.lookup_csv, args.state_json, config)
@@ -206,6 +208,7 @@ def add_shared_lookup_args(parser):
     parser.add_argument("--attempts", type=int, default=3, help="Lookup attempts per missing protein.")
     parser.add_argument("--delay", type=float, default=5.0, help="Seconds between requests.")
     parser.add_argument("--backoff", type=float, default=2.0, help="Retry backoff multiplier.")
+    parser.add_argument("--cloudflare-cooldown", type=float, default=60.0, help="Seconds to wait after Cloudflare challenges.")
 
 
 def build_parser():

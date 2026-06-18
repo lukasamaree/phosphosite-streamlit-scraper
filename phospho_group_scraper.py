@@ -3,11 +3,19 @@ import argparse
 import csv
 import re
 import os
+import random
+from pathlib import Path
 from urllib.parse import quote_plus
 
 
 DEFAULT_CLOUDFLARE_RETRIES = 3
 DEFAULT_CLOUDFLARE_WAIT_SECONDS = 10
+ROOT = Path(__file__).resolve().parent
+BROWSER_STATE_PATH = ROOT / ".phosphosite_browser_state.json"
+
+
+def cloudflare_wait_seconds(base_wait, attempt):
+    return base_wait * attempt + random.uniform(1.0, 4.0)
 
 
 async def is_cloudflare_challenge_page(page):
@@ -55,7 +63,9 @@ async def goto_with_cloudflare_retry(
             f"attempt {attempt}/{retries}; waiting {wait_seconds}s",
             flush=True,
         )
-        await page.wait_for_timeout(wait_seconds * 1000)
+        wait_for = cloudflare_wait_seconds(wait_seconds, attempt)
+        print(f"CLOUDFLARE: waiting {wait_for:.1f}s before checking {label} again", flush=True)
+        await page.wait_for_timeout(wait_for * 1000)
         if not await is_cloudflare_challenge_page(page):
             print(f"CLOUDFLARE: challenge cleared for {label}", flush=True)
             return
@@ -64,6 +74,33 @@ async def goto_with_cloudflare_retry(
         f"Cloudflare challenge persisted while loading {label} "
         f"after {retries} attempt(s); last title='{last_title}'."
     )
+
+
+async def new_browser_context(playwright):
+    browser = await playwright.chromium.launch(headless=True)
+    context_args = {
+        "viewport": {"width": 1365, "height": 900},
+        "user_agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
+    }
+    if BROWSER_STATE_PATH.exists() and BROWSER_STATE_PATH.stat().st_size > 0:
+        context_args["storage_state"] = str(BROWSER_STATE_PATH)
+        print(f"SESSION: reusing browser storage from {BROWSER_STATE_PATH}", flush=True)
+    context = await browser.new_context(**context_args)
+    page = await context.new_page()
+    return browser, context, page
+
+
+async def close_browser_context(browser, context):
+    try:
+        await context.storage_state(path=str(BROWSER_STATE_PATH))
+        print(f"SESSION: saved browser storage to {BROWSER_STATE_PATH}", flush=True)
+    except Exception as exc:
+        print(f"WARNING: could not save browser storage: {exc}", flush=True)
+    await browser.close()
 
 
 
@@ -209,8 +246,7 @@ async def main(site_id):
 
     url = f"https://www.phosphosite.org/siteAction.action?id={site_id}"
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        browser, context, page = await new_browser_context(p)
         await goto_with_cloudflare_retry(page, url, f"siteAction ID {site_id}")
         amino_acid, protein_name = await first_webscraper(page)()
         data = [{
@@ -344,6 +380,7 @@ async def main(site_id):
                 merged_with_pubmed_filename = os.path.join(folder, f'{amino_acid}_{protein_name}.csv')
                 merged_with_pubmed.to_csv(merged_with_pubmed_filename, index=False, na_rep='nan')
                 print(f"Saved {merged_with_pubmed_filename}")
+        await close_browser_context(browser, context)
 
 
 NON_HUMAN_ORGANISM_PATTERN = re.compile(
@@ -391,8 +428,7 @@ async def find_site_ids_for_protein(protein_id):
     site_table_url = f"https://www.phosphosite.org/siteTableNewAction?id={protein_id}&showAllSites=true"
     print(f"STAGE: protein {protein_id}: opening browser for site discovery", flush=True)
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        browser, context, page = await new_browser_context(p)
         try:
             print(f"STAGE: protein {protein_id}: warming PhosphoSitePlus session", flush=True)
             await goto_with_cloudflare_retry(
@@ -412,7 +448,7 @@ async def find_site_ids_for_protein(protein_id):
                 print(f"STAGE: protein {protein_id}: found {len(hrefs)} human site link(s) in site table", flush=True)
         finally:
             print(f"STAGE: protein {protein_id}: closing site discovery browser", flush=True)
-            await browser.close()
+            await close_browser_context(browser, context)
 
     site_ids = []
     for href in hrefs:
@@ -605,34 +641,46 @@ async def resolve_protein_name(protein_name, organism):
 
     async with async_playwright() as p:
         print(f"STAGE: {protein_name}: launching browser", flush=True)
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        browser, context, page = await new_browser_context(p)
         try:
             return await resolve_protein_name_on_page(page, protein_name, organism)
         finally:
             print(f"STAGE: {protein_name}: closing browser", flush=True)
-            await browser.close()
+            await close_browser_context(browser, context)
 
 
 async def resolve_protein_names(protein_names, organism, delay, continue_on_error=False):
+    from playwright.async_api import async_playwright
+
     resolved = []
     failures = []
 
-    for index, protein_name in enumerate(protein_names, start=1):
-        print(f"[{index}/{len(protein_names)}] START lookup {protein_name}", flush=True)
+    async with async_playwright() as p:
+        print("SESSION: launching one browser context for lookup batch", flush=True)
+        browser, context, page = await new_browser_context(p)
         try:
-            result = await resolve_protein_name(protein_name, organism)
-            resolved.append(result)
-            print(f"[{index}/{len(protein_names)}] DONE lookup {protein_name}: id={result['protein_id']} url={result['url']}", flush=True)
-        except Exception as exc:
-            failures.append((protein_name, exc))
-            print(f"ERROR: {protein_name} lookup failed: {exc}", flush=True)
-            if not continue_on_error:
-                raise
+            for index, protein_name in enumerate(protein_names, start=1):
+                print(f"[{index}/{len(protein_names)}] START lookup {protein_name}", flush=True)
+                try:
+                    result = await resolve_protein_name_on_page(page, protein_name, organism)
+                    resolved.append(result)
+                    print(
+                        f"[{index}/{len(protein_names)}] DONE lookup {protein_name}: "
+                        f"id={result['protein_id']} url={result['url']}",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    failures.append((protein_name, exc))
+                    print(f"ERROR: {protein_name} lookup failed: {exc}", flush=True)
+                    if not continue_on_error:
+                        raise
 
-        if index < len(protein_names) and delay > 0:
-            print(f"WAIT: sleeping {delay:.1f}s before next protein lookup", flush=True)
-            await asyncio.sleep(delay)
+                if index < len(protein_names) and delay > 0:
+                    print(f"WAIT: sleeping {delay:.1f}s before next protein lookup", flush=True)
+                    await asyncio.sleep(delay)
+        finally:
+            print("SESSION: closing lookup browser context", flush=True)
+            await close_browser_context(browser, context)
 
     if failures:
         failed_names = ", ".join(name for name, _ in failures)

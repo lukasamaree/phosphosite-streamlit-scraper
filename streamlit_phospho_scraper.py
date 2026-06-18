@@ -256,6 +256,13 @@ with st.sidebar:
     st.subheader("Workflow")
     delay = st.number_input("Delay between requests", min_value=0.0, max_value=30.0, value=5.0, step=0.5)
     attempts = st.number_input("Agent retry attempts", min_value=1, max_value=10, value=3, step=1)
+    cloudflare_cooldown = st.number_input(
+        "Cloudflare cooldown",
+        min_value=10.0,
+        max_value=300.0,
+        value=60.0,
+        step=5.0,
+    )
     continue_on_error = st.toggle("Continue on errors", value=True)
     reuse_saved_ids = st.toggle("Reuse saved protein IDs", value=True)
     resolve_missing_before_scrape = st.toggle("Resolve missing IDs before scrape", value=True)
@@ -350,12 +357,15 @@ with run_tab:
                     str(attempts),
                     "--delay",
                     str(delay),
+                    "--cloudflare-cooldown",
+                    str(cloudflare_cooldown),
                 ]
 
                 summary_lines = [
                     f"Input: {len(proteins)} protein symbol(s)",
                     f"Attempts per protein: {attempts}",
                     f"Delay/backoff base: {delay}s",
+                    f"Cloudflare cooldown: {cloudflare_cooldown}s",
                     f"Checkpoint JSON: {AGENTIC_STATE_JSON}",
                     f"Partial CSV: {LOOKUP_CSV}",
                     "Workflow: resume resolved proteins, retry failures, checkpoint after every attempt",
@@ -395,11 +405,14 @@ with run_tab:
                     str(attempts),
                     "--delay",
                     str(delay),
+                    "--cloudflare-cooldown",
+                    str(cloudflare_cooldown),
                 ]
                 summary_lines = [
                     f"Saved IDs available: {len(usable_lookup_df)}",
                     f"Missing IDs to resolve now: {len(missing_proteins)}",
                     f"Missing proteins: {', '.join(missing_proteins)}",
+                    f"Cloudflare cooldown: {cloudflare_cooldown}s",
                     f"Checkpoint JSON: {AGENTIC_STATE_JSON}",
                     "Workflow: use saved IDs first, resolve only missing proteins, then scrape",
                 ]

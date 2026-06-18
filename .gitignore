@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .venv312/
 .git_broken/
+.phosphosite_browser_state.json
 .DS_Store
 
 # Local curator worklists and generated scrape outputs
