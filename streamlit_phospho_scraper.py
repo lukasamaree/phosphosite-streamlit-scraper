@@ -491,8 +491,13 @@ with outputs_tab:
             st.dataframe(filtered, use_container_width=True, hide_index=True)
             dataframe_download(filtered, "scrape_output_summary.csv", "Download Output Summary")
 
-            counts = filtered.groupby("protein", dropna=False)["file"].count().sort_values(ascending=False)
-            st.bar_chart(counts)
+            counts = (
+                filtered.groupby("protein", dropna=False)["file"]
+                .count()
+                .sort_values(ascending=False)
+                .reset_index(name="csv_files")
+            )
+            st.dataframe(counts, use_container_width=True, hide_index=True)
 
             selected_file = st.selectbox("Preview CSV", filtered["file"].tolist())
             preview_path = ROOT / selected_file
