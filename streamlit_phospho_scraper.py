@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -229,6 +230,15 @@ def dataframe_download(df, filename, label):
     buffer = io.StringIO()
     df.to_csv(buffer, index=False)
     st.download_button(label, buffer.getvalue(), file_name=filename, mime="text/csv")
+
+
+def zip_files(files):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in files:
+            archive.write(path, arcname=str(path.relative_to(ROOT)))
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 st.title("PhosphoSitePlus Scraper Dashboard")
@@ -487,9 +497,16 @@ with outputs_tab:
             protein_options = ["All", *sorted(summary["protein"].dropna().unique())]
             selected_protein = st.selectbox("Protein", protein_options)
             filtered = summary if selected_protein == "All" else summary[summary["protein"] == selected_protein]
+            filtered_files = [ROOT / file_path for file_path in filtered["file"].tolist()]
 
             st.dataframe(filtered, use_container_width=True, hide_index=True)
             dataframe_download(filtered, "scrape_output_summary.csv", "Download Output Summary")
+            st.download_button(
+                "Download Output ZIP",
+                zip_files(filtered_files),
+                file_name="phosphosite_scrape_outputs.zip",
+                mime="application/zip",
+            )
 
             counts = (
                 filtered.groupby("protein", dropna=False)["file"]
