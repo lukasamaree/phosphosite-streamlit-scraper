@@ -65,6 +65,16 @@ Scrape known IDs directly:
 
 The tool prints a final `SUMMARY_JSON: ...` line for agents to parse.
 
+## Validation Tool
+
+Validate the curated ID cache and scraped CSV outputs:
+
+```bash
+.venv312/bin/python validate_scrape_outputs.py
+```
+
+The validator checks that curated IDs have expected columns/URLs, scraped CSVs are readable, output files have rows/columns, and PubMed IDs look numeric when present. It prints a final `VALIDATION_JSON: ...` line for agents to parse.
+
 ## Direct Scraper
 
 Look up names without scraping:
