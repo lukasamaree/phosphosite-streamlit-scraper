@@ -75,6 +75,19 @@ Validate the curated ID cache and scraped CSV outputs:
 
 The validator checks that curated IDs have expected columns/URLs, scraped CSVs are readable, output files have rows/columns, and PubMed IDs look numeric when present. It prints a final `VALIDATION_JSON: ...` line for agents to parse.
 
+## Identity-First Scraper Evaluation
+
+Use `scraper_eval/` when you want to score actual scraper outputs against an expected manifest.
+
+```bash
+.venv312/bin/python -m scraper_eval.evaluate_scraper_outputs \
+  --manifest scraper_eval/tests/fixtures/manifest.csv \
+  --curated-ids scraper_eval/tests/fixtures/correct_ids.csv \
+  --output-root scraper_eval/tests/fixtures/correct_outputs
+```
+
+This evaluator checks protein identity before PTM scoring. Wrong protein ID, organism, or UniProt/SwissProt accession is a critical identity failure and forces `final_score = 0`.
+
 ## Direct Scraper
 
 Look up names without scraping:

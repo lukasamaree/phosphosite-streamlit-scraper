@@ -13,11 +13,13 @@
   - Rerun only failed or missing proteins unless the user asks for a full refresh.
 - Prefer the reusable tool wrapper `phosphosite_agent_tool.py` for execution after Codex has made the decision.
 - After scraping, validate outputs with `.venv312/bin/python validate_scrape_outputs.py` and parse the final `VALIDATION_JSON: ...` line.
+- For deterministic scraper-quality scoring, use `scraper_eval/`. It gates PTM scoring behind protein identity and prints `EVAL_JSON: ...`.
 - Resolve and save IDs for a worklist with `.venv312/bin/python phosphosite_agent_tool.py resolve --protein-names-file protein_names.txt`.
 - Scrape from saved IDs, resolving missing names first, with `.venv312/bin/python phosphosite_agent_tool.py run --protein-names-file protein_names.txt --continue-on-error`.
 - Scrape already-known IDs with `.venv312/bin/python phosphosite_agent_tool.py scrape --protein-ids-file protein_ids.txt --continue-on-error`.
 - After running a tool, parse the final `SUMMARY_JSON: ...` line, inspect generated CSVs or failures, and adapt the next command from that evidence.
 - After validation, treat `status=failed` as a blocker. Treat `passed_with_warnings` as usable but worth reviewing.
+- Treat any `critical_identity_failure` from `scraper_eval` as a blocker, even if PTM rows are present.
 - The reusable tool and dashboard both write resolved IDs to `curated_protein_ids/`; generated scrape output folders and site CSVs should remain uncommitted.
 - Curators may maintain a local `protein_names.txt` file with one protein name/symbol per line. This is the preferred workflow.
 - The scraper looks up protein names by searching PhosphoSitePlus, choosing a human result row, navigating to the human protein page, and extracting the ID from the final resolved `proteinAction.action?id=...` URL. Treat the final URL as the source of truth.
