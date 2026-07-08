@@ -54,6 +54,11 @@ def is_cloudflare_error(error):
     return "cloudflare challenge" in str(error).lower()
 
 
+def is_invalid_site_page_error(error):
+    message = str(error).lower()
+    return "invalid site page" in message or "confirmation" in message or "comfirmation" in message
+
+
 def load_scrape_state(path=DEFAULT_SCRAPE_STATE_PATH):
     path = Path(path)
     if not path.exists():
@@ -92,6 +97,7 @@ def get_protein_state(state, protein_id):
     record.setdefault("completed_site_ids", [])
     record.setdefault("failed_site_ids", [])
     record.setdefault("cloudflare_blocked_site_ids", [])
+    record.setdefault("invalid_site_page_ids", [])
     record.setdefault("site_outputs", {})
     record.setdefault("site_errors", {})
     return record
@@ -122,6 +128,7 @@ def mark_site_completed(state, protein_id, site_id, output_path, state_path):
     add_unique_id(record["completed_site_ids"], site_id)
     remove_id(record["failed_site_ids"], site_id)
     remove_id(record["cloudflare_blocked_site_ids"], site_id)
+    remove_id(record["invalid_site_page_ids"], site_id)
     record["site_outputs"][str(site_id)] = str(output_path)
     record.pop("current_site_id", None)
     record["status"] = "partial" if len(record["completed_site_ids"]) < len(record["discovered_site_ids"]) else "complete"
@@ -132,8 +139,15 @@ def mark_site_completed(state, protein_id, site_id, output_path, state_path):
 
 def mark_site_failed(state, protein_id, site_id, error, state_path):
     record = get_protein_state(state, protein_id)
-    error_type = "cloudflare" if is_cloudflare_error(error) else "scrape"
-    target_list = "cloudflare_blocked_site_ids" if error_type == "cloudflare" else "failed_site_ids"
+    if is_cloudflare_error(error):
+        error_type = "cloudflare"
+        target_list = "cloudflare_blocked_site_ids"
+    elif is_invalid_site_page_error(error):
+        error_type = "invalid_site_page"
+        target_list = "invalid_site_page_ids"
+    else:
+        error_type = "scrape"
+        target_list = "failed_site_ids"
     add_unique_id(record[target_list], site_id)
     remove_id(record["completed_site_ids"], site_id)
     record["site_errors"][str(site_id)] = {
@@ -314,6 +328,37 @@ def safe_filename_component(value):
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "unknown").strip())
     return cleaned.strip("_") or "unknown"
 
+
+def is_invalid_site_identity_text(value):
+    normalized = " ".join(str(value or "").replace("_", " ").split()).strip().lower()
+    invalid_markers = [
+        "home phosphosite",
+        "phosphosite comfirmation",
+        "phosphosite confirmation",
+        "confirmation",
+        "confirm",
+        "just a moment",
+    ]
+    return not normalized or any(marker in normalized for marker in invalid_markers)
+
+
+async def validate_site_page(page, site_id, amino_acid, protein_name):
+    current_url = getattr(page, "url", "")
+    if "siteAction.action" not in current_url or f"id={site_id}" not in current_url:
+        raise RuntimeError(
+            f"Invalid site page for SITE_ID {site_id}: expected siteAction URL, got {current_url}"
+        )
+    if is_invalid_site_identity_text(amino_acid) or is_invalid_site_identity_text(protein_name):
+        try:
+            title = await page.title()
+        except Exception:
+            title = ""
+        raise RuntimeError(
+            f"Invalid site page for SITE_ID {site_id}: parsed header is not a real protein site "
+            f"(amino_acid={amino_acid!r}, protein={protein_name!r}, title={title!r}, url={current_url})"
+        )
+
+
 async def upstream_scraper(page):
     """
     Scrapes the Upstream Regulation table and returns a dictionary with keys:
@@ -430,6 +475,7 @@ async def main(site_id):
         try:
             await goto_with_cloudflare_retry(page, url, f"siteAction ID {site_id}")
             amino_acid, protein_name = await first_webscraper(page)()
+            await validate_site_page(page, site_id, amino_acid, protein_name)
             # Save upstream scraper result, exploded with entity, organism, references
             upstream_data = await upstream_scraper(page)
             print(f"DEBUG: Upstream data scraped: {upstream_data}")

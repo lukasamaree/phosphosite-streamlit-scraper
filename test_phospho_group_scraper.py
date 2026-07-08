@@ -10,6 +10,7 @@ from phospho_group_scraper import (
     resolve_protein_name_on_page,
     run_protein_batch,
     run_site_batch,
+    validate_site_page,
 )
 
 
@@ -63,6 +64,33 @@ class ProteinLookupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["organism"], "human")
         self.assertEqual(result["url"], "https://www.phosphosite.org/proteinAction.action?id=570&showAllSites=true")
         self.assertEqual(result["source"], "human_search_result_url_confirm_redirect")
+
+
+class FakeSitePage:
+    def __init__(self, url, title="PhosphoSitePlus"):
+        self.url = url
+        self._title = title
+
+    async def title(self):
+        return self._title
+
+
+class SiteValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmation_page_identity_is_rejected(self):
+        page = FakeSitePage("https://www.phosphosite.org/siteAction.action?id=40477200")
+
+        with self.assertRaisesRegex(RuntimeError, "Invalid site page"):
+            await validate_site_page(
+                page,
+                40477200,
+                "Home PhosphoSite Comfirmation",
+                "Home PhosphoSite Comfirmation",
+            )
+
+    async def test_site_action_url_and_real_header_pass_validation(self):
+        page = FakeSitePage("https://www.phosphosite.org/siteAction.action?id=40477200")
+
+        await validate_site_page(page, 40477200, "Tyr1068", "EGFR")
 
 
 class ScrapeCheckpointTests(unittest.IsolatedAsyncioTestCase):
