@@ -261,9 +261,9 @@ with st.sidebar:
     cloudflare_cooldown = st.number_input(
         "Cloudflare cooldown",
         min_value=10.0,
-        max_value=300.0,
-        value=60.0,
-        step=5.0,
+        max_value=1800.0,
+        value=900.0,
+        step=30.0,
     )
     continue_on_error = st.toggle("Continue on errors", value=True)
     reuse_saved_ids = st.toggle("Reuse saved protein IDs", value=True)
@@ -319,8 +319,6 @@ with run_tab:
                     str(delay),
                     "--delay-jitter",
                     str(delay_jitter),
-                    "--scrape-state",
-                    str(SCRAPE_STATE_JSON),
                 ]
                 if continue_on_error:
                     args.append("--continue-on-error")
@@ -458,6 +456,10 @@ with run_tab:
                     str(delay),
                     "--delay-jitter",
                     str(delay_jitter),
+                    "--cloudflare-cooldown",
+                    str(cloudflare_cooldown),
+                    "--scrape-state",
+                    str(SCRAPE_STATE_JSON),
                 ]
                 if continue_on_error:
                     args.append("--continue-on-error")
@@ -467,6 +469,7 @@ with run_tab:
                     f"ID file: {IDS_TXT}",
                     f"Saved ID CSV: {LOOKUP_CSV}",
                     f"Scrape checkpoint JSON: {SCRAPE_STATE_JSON}",
+                    f"Cloudflare circuit-breaker cooldown: {cloudflare_cooldown}s",
                     f"Missing proteins skipped: {len(missing_proteins) if requested_proteins else 0}",
                     f"Delay between IDs/sites: {delay}s +/- {delay_jitter:.0%}",
                     "Workflow: open protein page -> collect human siteAction links -> scrape each site -> write CSVs",

@@ -101,6 +101,45 @@ class ScrapeCheckpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(protein_state["completed_site_ids"], [111, 222])
             self.assertEqual(protein_state["site_outputs"]["222"], "new.csv")
 
+    async def test_cloudflare_site_failure_stops_batch_before_next_site(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "scrape_state.json"
+            state = {
+                "proteins": {
+                    "570": {
+                        "protein_id": 570,
+                        "status": "sites_discovered",
+                        "discovered_site_ids": [111, 222],
+                        "completed_site_ids": [],
+                        "failed_site_ids": [],
+                        "cloudflare_blocked_site_ids": [],
+                        "site_outputs": {},
+                        "site_errors": {},
+                    }
+                }
+            }
+
+            with patch(
+                "phospho_group_scraper.main",
+                new=AsyncMock(side_effect=RuntimeError("Cloudflare challenge persisted")),
+            ) as fake_main:
+                result = await run_site_batch(
+                    [111, 222],
+                    delay=0,
+                    continue_on_error=True,
+                    protein_id=570,
+                    scrape_state=state,
+                    scrape_state_path=state_path,
+                    cloudflare_cooldown=0,
+                )
+
+            fake_main.assert_awaited_once_with(111)
+            self.assertEqual(result["status"], "stopped_on_cloudflare")
+            saved = load_scrape_state(state_path)
+            protein_state = saved["proteins"]["570"]
+            self.assertEqual(protein_state["cloudflare_blocked_site_ids"], [111])
+            self.assertEqual(protein_state["completed_site_ids"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

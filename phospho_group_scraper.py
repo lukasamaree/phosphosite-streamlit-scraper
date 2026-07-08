@@ -13,6 +13,7 @@ from urllib.parse import quote_plus
 DEFAULT_CLOUDFLARE_RETRIES = 3
 DEFAULT_CLOUDFLARE_WAIT_SECONDS = 10
 DEFAULT_DELAY_JITTER = 0.5
+DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS = 900
 ROOT = Path(__file__).resolve().parent
 BROWSER_STATE_PATH = ROOT / ".phosphosite_browser_state.json"
 DEFAULT_SCRAPE_STATE_PATH = ROOT / "curated_protein_ids" / "scrape_state.json"
@@ -622,6 +623,8 @@ async def scrape_protein(
     scrape_state=None,
     scrape_state_path=DEFAULT_SCRAPE_STATE_PATH,
     force_rescrape=False,
+    cloudflare_cooldown=DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS,
+    continue_after_cloudflare=False,
 ):
     if scrape_state is None:
         scrape_state = load_scrape_state(scrape_state_path)
@@ -650,6 +653,8 @@ async def scrape_protein(
         scrape_state=scrape_state,
         scrape_state_path=scrape_state_path,
         force_rescrape=force_rescrape,
+        cloudflare_cooldown=cloudflare_cooldown,
+        continue_after_cloudflare=continue_after_cloudflare,
     )
     print(f"DONE: protein ID {protein_id}: completed site scrape batch", flush=True)
     return site_result
@@ -1027,6 +1032,17 @@ def build_parser():
         help="Continue a batch if one ID fails.",
     )
     parser.add_argument(
+        "--cloudflare-cooldown",
+        type=float,
+        default=DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS,
+        help="Seconds to wait after persistent Cloudflare during resolved-ID scraping before stopping.",
+    )
+    parser.add_argument(
+        "--continue-after-cloudflare",
+        action="store_true",
+        help="Keep scraping the next site/protein after persistent Cloudflare. Default stops to avoid repeated challenges.",
+    )
+    parser.add_argument(
         "--scrape-state",
         default=str(DEFAULT_SCRAPE_STATE_PATH),
         help="JSON checkpoint for resolved-ID protein/site scraping.",
@@ -1053,12 +1069,15 @@ async def run_site_batch(
     scrape_state=None,
     scrape_state_path=DEFAULT_SCRAPE_STATE_PATH,
     force_rescrape=False,
+    cloudflare_cooldown=DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS,
+    continue_after_cloudflare=False,
 ):
     if not site_ids:
         raise ValueError("No SITE_IDs were provided.")
 
     print(f"START: scraping {len(site_ids)} siteAction ID(s)", flush=True)
     failures = []
+    stopped_on_cloudflare = False
     for index, site_id in enumerate(site_ids, start=1):
         if protein_id is not None and scrape_state is not None and not force_rescrape:
             protein_record = get_protein_state(scrape_state, protein_id)
@@ -1083,19 +1102,33 @@ async def run_site_batch(
             if protein_id is not None and scrape_state is not None:
                 mark_site_failed(scrape_state, protein_id, site_id, exc, scrape_state_path)
             print(f"ERROR: SITE_ID {site_id} failed: {exc}", flush=True)
+            if is_cloudflare_error(exc) and not continue_after_cloudflare:
+                stopped_on_cloudflare = True
+                print(
+                    "CIRCUIT_BREAKER: persistent Cloudflare detected during resolved-ID site scrape; "
+                    "stopping this batch after checkpoint instead of trying the next site immediately.",
+                    flush=True,
+                )
+                if cloudflare_cooldown > 0:
+                    await sleep_between_requests(
+                        cloudflare_cooldown,
+                        delay_jitter,
+                        "resolved-ID scrape resume window",
+                    )
+                break
             if not continue_on_error:
                 break
 
-        if index < len(site_ids):
+        if index < len(site_ids) and not stopped_on_cloudflare:
             await sleep_between_requests(delay, delay_jitter, "siteAction scrape")
 
     if failures:
         failed_ids = ", ".join(str(site_id) for site_id, _ in failures)
-        if continue_on_error:
+        if continue_on_error or stopped_on_cloudflare:
             print(f"WARNING: failed SITE_IDs after retries: {failed_ids}", flush=True)
             return {
                 "failed_site_ids": [site_id for site_id, _ in failures],
-                "status": "completed_with_site_errors",
+                "status": "stopped_on_cloudflare" if stopped_on_cloudflare else "completed_with_site_errors",
             }
         raise RuntimeError(f"Failed SITE_IDs: {failed_ids}")
     print("DONE: siteAction scrape batch completed", flush=True)
@@ -1109,6 +1142,8 @@ async def run_protein_batch(
     delay_jitter=DEFAULT_DELAY_JITTER,
     scrape_state_path=DEFAULT_SCRAPE_STATE_PATH,
     force_rescrape=False,
+    cloudflare_cooldown=DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS,
+    continue_after_cloudflare=False,
 ):
     if not protein_ids:
         raise ValueError("No protein IDs were provided.")
@@ -1128,10 +1163,23 @@ async def run_protein_batch(
                 scrape_state=scrape_state,
                 scrape_state_path=scrape_state_path,
                 force_rescrape=force_rescrape,
+                cloudflare_cooldown=cloudflare_cooldown,
+                continue_after_cloudflare=continue_after_cloudflare,
             )
             failed_site_ids = site_result.get("failed_site_ids", []) if site_result else []
             if failed_site_ids:
                 site_failures_by_protein[str(protein_id)] = failed_site_ids
+            if site_result and site_result.get("status") == "stopped_on_cloudflare":
+                print(
+                    f"CIRCUIT_BREAKER: protein {protein_id} stopped on Cloudflare; "
+                    "ending resolved-ID protein batch so it can resume later from checkpoint.",
+                    flush=True,
+                )
+                return {
+                    "failed_protein_ids": [],
+                    "failed_site_ids_by_protein": site_failures_by_protein,
+                    "status": "stopped_on_cloudflare",
+                }
             print(f"[{index}/{len(protein_ids)}] DONE protein ID {protein_id}", flush=True)
         except Exception as exc:
             failures.append((protein_id, exc))
@@ -1247,6 +1295,8 @@ if __name__ == "__main__":
                 args.delay_jitter,
                 args.scrape_state,
                 args.force_rescrape,
+                args.cloudflare_cooldown,
+                args.continue_after_cloudflare,
             )
         )
     if site_ids:

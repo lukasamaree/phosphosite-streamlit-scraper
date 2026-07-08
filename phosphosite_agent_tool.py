@@ -228,6 +228,8 @@ async def scrape_ids(args):
         args.delay_jitter,
         args.scrape_state,
         args.force_rescrape,
+        args.cloudflare_cooldown,
+        args.continue_after_cloudflare,
     )
 
     summary = {
@@ -265,6 +267,7 @@ def add_shared_lookup_args(parser):
     parser.add_argument("--cloudflare-cooldown", type=float, default=60.0, help="Seconds to wait after Cloudflare challenges.")
     parser.add_argument("--scrape-state", default=str(DEFAULT_SCRAPE_STATE_JSON), help="Resolved-ID scrape checkpoint JSON.")
     parser.add_argument("--force-rescrape", action="store_true", help="Ignore completed site IDs in the scrape checkpoint.")
+    parser.add_argument("--continue-after-cloudflare", action="store_true", help="Continue scraping after persistent Cloudflare instead of stopping at the checkpoint.")
 
 
 def add_evaluation_args(parser):
