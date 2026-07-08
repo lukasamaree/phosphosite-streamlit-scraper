@@ -504,6 +504,20 @@ async def navigate_to_protein_url(page, url, require_human=True):
     return protein_id, page.url
 
 
+def result_from_human_search_candidate(protein_name, protein_id, url, source):
+    print(
+        f"RESOLVED: {protein_name}: id={protein_id} from human search-result URL {url}",
+        flush=True,
+    )
+    return {
+        "protein_name": protein_name,
+        "protein_id": protein_id,
+        "url": url,
+        "organism": "human",
+        "source": source,
+    }
+
+
 async def resolve_protein_name_on_page(page, protein_name, organism):
     if organism.strip().lower() != "human":
         raise ValueError("This workflow only supports human protein lookup.")
@@ -613,7 +627,24 @@ async def resolve_protein_name_on_page(page, protein_name, organism):
                 f"gene='{best_row['gene']}', protein='{best_row['protein']}'",
                 flush=True,
             )
-            best_id, resolved_url = await navigate_to_protein_url(page, best_url)
+            best_id_from_url = extract_protein_id_from_url(best_url)
+            try:
+                best_id, resolved_url = await navigate_to_protein_url(page, best_url)
+            except RuntimeError as exc:
+                final_url = getattr(page, "url", "")
+                if best_id_from_url is not None and "confirmAction" in final_url:
+                    print(
+                        f"WARNING: {protein_name}: candidate URL redirected to confirmAction; "
+                        f"saving human search-result id={best_id_from_url} from {best_url}",
+                        flush=True,
+                    )
+                    return result_from_human_search_candidate(
+                        protein_name,
+                        best_id_from_url,
+                        best_url,
+                        "human_search_result_url_confirm_redirect",
+                    )
+                raise exc
             print(
                 f"RESOLVED: {protein_name}: id={best_id} "
                 f"from URL: {resolved_url}; search row: protein='{best_row['protein']}', "
