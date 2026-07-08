@@ -8,6 +8,7 @@ from phospho_group_scraper import (
     load_scrape_state,
     order_site_ids_for_resume,
     resolve_protein_name_on_page,
+    run_protein_batch,
     run_site_batch,
 )
 
@@ -187,6 +188,26 @@ class ScrapeCheckpointTests(unittest.IsolatedAsyncioTestCase):
         ordered = order_site_ids_for_resume([111, 222, 333, 444], protein_record)
 
         self.assertEqual(ordered, [444, 222, 333, 111])
+
+    async def test_cloudflare_during_site_discovery_stops_before_next_protein(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "scrape_state.json"
+            with patch(
+                "phospho_group_scraper.scrape_protein",
+                new=AsyncMock(side_effect=RuntimeError("Cloudflare challenge persisted")),
+            ) as fake_scrape_protein:
+                result = await run_protein_batch(
+                    [570, 465],
+                    delay=0,
+                    continue_on_error=True,
+                    scrape_state_path=state_path,
+                    cloudflare_cooldown=0,
+                )
+
+        fake_scrape_protein.assert_awaited_once()
+        self.assertEqual(fake_scrape_protein.await_args.args[0], 570)
+        self.assertEqual(result["status"], "stopped_on_cloudflare")
+        self.assertEqual(result["failed_protein_ids"], [570])
 
 
 if __name__ == "__main__":

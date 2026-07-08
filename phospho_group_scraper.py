@@ -1254,6 +1254,23 @@ async def run_protein_batch(
             if not protein_record.get("last_error") and not protein_record.get("site_errors"):
                 mark_protein_stage_failed(scrape_state, protein_id, "protein_scrape", exc, scrape_state_path)
             print(f"ERROR: Protein ID {protein_id} failed: {exc}", flush=True)
+            if is_cloudflare_error(exc) and not continue_after_cloudflare:
+                print(
+                    f"CIRCUIT_BREAKER: persistent Cloudflare detected while preparing protein {protein_id}; "
+                    "ending resolved-ID protein batch instead of trying the next protein immediately.",
+                    flush=True,
+                )
+                if cloudflare_cooldown > 0:
+                    await sleep_between_requests(
+                        cloudflare_cooldown,
+                        delay_jitter,
+                        "resolved-ID protein batch resume window",
+                    )
+                return {
+                    "failed_protein_ids": [protein_id for protein_id, _ in failures],
+                    "failed_site_ids_by_protein": site_failures_by_protein,
+                    "status": "stopped_on_cloudflare",
+                }
             if not continue_on_error:
                 break
 
