@@ -32,9 +32,16 @@ def output_csv_files(root):
     return sorted(files, key=lambda item: str(item.relative_to(root)).lower())
 
 
-def validate_curated_ids(path):
+def display_path(path, root):
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def validate_curated_ids(path, root=ROOT):
     result = {
-        "path": str(path.relative_to(ROOT)) if path.exists() else str(path),
+        "path": display_path(path, root) if path.exists() else str(path),
         "exists": path.exists(),
         "rows": 0,
         "errors": [],
@@ -147,7 +154,7 @@ def validate_output_csv(path, root, deep=False):
 
 
 def build_summary(root, deep_csv=False, max_files=None, include_files=False):
-    curated = validate_curated_ids(CURATED_ID_CSV)
+    curated = validate_curated_ids(root / "curated_protein_ids" / "resolved_protein_ids.csv", root=root)
     files = output_csv_files(root)
     if max_files is not None:
         files = files[:max_files]

@@ -1,1 +1,5 @@
 protein_name,protein_id,url,organism,source,attempts,status
+AKT1,570,https://www.phosphosite.org/proteinAction.action?id=570&showAllSites=true,human,manual_known_url,1,resolved
+TP53,465,https://www.phosphosite.org/proteinAction.action?id=465&showAllSites=true,human,manual_known_url,1,resolved
+EGFR,592,https://www.phosphosite.org/proteinAction.action?id=592&showAllSites=true,human,manual_known_url,1,resolved
+MAPK1,832,https://www.phosphosite.org/proteinAction.action?id=832&showAllSites=true,human,manual_known_url,1,resolved

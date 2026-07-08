@@ -1,12 +1,12 @@
 import argparse
 import asyncio
+import csv
 import json
 from pathlib import Path
 
-import pandas as pd
-
 from agentic_phospho_workflow import AgenticLookupConfig, load_state, run_agentic_lookup
 from phospho_group_scraper import parse_ids_file, parse_names_file, run_protein_batch
+from scraper_eval.evaluate_scraper_outputs import evaluate
 
 
 ROOT = Path(__file__).resolve().parent
@@ -49,20 +49,30 @@ def collect_ids(args):
 def read_lookup_csv(path):
     path = Path(path)
     if not path.exists():
-        return pd.DataFrame(columns=["protein_name", "protein_id", "url", "organism", "source"])
-    return pd.read_csv(path)
+        return []
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def row_protein_key(row):
+    return str(row.get("protein_name", "")).strip().upper()
+
+
+def row_protein_id(row):
+    value = str(row.get("protein_id", "")).strip()
+    if not value:
+        return None
+    return int(float(value))
 
 
 def resolved_rows_for_names(names, lookup_csv):
-    lookup_df = read_lookup_csv(lookup_csv)
-    if lookup_df.empty or not names:
-        return lookup_df.iloc[0:0], names
+    lookup_rows = read_lookup_csv(lookup_csv)
+    if not lookup_rows or not names:
+        return [], names
 
     requested = {name.upper() for name in names}
-    df = lookup_df.copy()
-    df["_protein_key"] = df["protein_name"].astype(str).str.strip().str.upper()
-    found = df[df["_protein_key"].isin(requested)].drop(columns=["_protein_key"])
-    found_keys = set(found["protein_name"].astype(str).str.strip().str.upper())
+    found = [row for row in lookup_rows if row_protein_key(row) in requested]
+    found_keys = {row_protein_key(row) for row in found}
     missing = [name for name in names if name.upper() not in found_keys]
     return found, missing
 
@@ -74,6 +84,32 @@ def write_ids_file(ids, path):
         for protein_id in ids:
             handle.write(f"{int(protein_id)}\n")
     return path
+
+
+def maybe_evaluate_outputs(args):
+    manifest = getattr(args, "eval_manifest", None)
+    if not manifest:
+        return None
+
+    output_root = Path(getattr(args, "output_root", ROOT)).resolve()
+    summary = evaluate(Path(manifest), Path(args.lookup_csv), output_root)
+    report_path = getattr(args, "eval_report", None)
+    if report_path:
+        report_path = Path(report_path)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+        print(f"EVAL: wrote scraper evaluation report to {report_path.resolve()}", flush=True)
+
+    print(
+        "EVAL: "
+        f"status={summary['status']} "
+        f"final_score={summary['final_score']:.1f} "
+        f"wrong_protein_rate={summary['wrong_protein_rate']:.3f} "
+        f"classification={summary['classification']['counts']}",
+        flush=True,
+    )
+    return summary
 
 
 def summarize_lookup_state(state_json, lookup_csv, requested_names=None):
@@ -89,7 +125,7 @@ def summarize_lookup_state(state_json, lookup_csv, requested_names=None):
         for name, record in runs.items()
         if record.get("status") == "failed"
     }
-    saved_df = read_lookup_csv(lookup_csv)
+    saved_rows = read_lookup_csv(lookup_csv)
     summary = {
         "state_json": str(Path(state_json).resolve()),
         "lookup_csv": str(Path(lookup_csv).resolve()),
@@ -97,7 +133,7 @@ def summarize_lookup_state(state_json, lookup_csv, requested_names=None):
         "requested_names": requested_names or [],
         "resolved_count": len(resolved_records),
         "failed_count": len(failed_records),
-        "csv_rows": len(saved_df),
+        "csv_rows": len(saved_rows),
         "resolved": [
             {
                 "protein_name": name,
@@ -170,7 +206,11 @@ async def scrape_ids(args):
 
         if missing_names:
             print(f"WARNING: missing saved IDs for: {', '.join(missing_names)}", flush=True)
-        ids.extend(saved_rows["protein_id"].dropna().astype(int).tolist())
+        ids.extend(
+            protein_id
+            for protein_id in (row_protein_id(row) for row in saved_rows)
+            if protein_id is not None
+        )
 
     ids = list(dict.fromkeys(int(protein_id) for protein_id in ids))
     if not ids:
@@ -189,6 +229,9 @@ async def scrape_ids(args):
         "failed_protein_ids": scrape_result.get("failed_protein_ids", []) if scrape_result else [],
         "failed_site_ids_by_protein": scrape_result.get("failed_site_ids_by_protein", {}) if scrape_result else {},
     }
+    evaluation = maybe_evaluate_outputs(args)
+    if evaluation is not None:
+        summary["evaluation"] = evaluation
     print("SUMMARY_JSON: " + json.dumps(summary, sort_keys=True), flush=True)
     return summary
 
@@ -209,6 +252,22 @@ def add_shared_lookup_args(parser):
     parser.add_argument("--delay", type=float, default=5.0, help="Seconds between requests.")
     parser.add_argument("--backoff", type=float, default=2.0, help="Retry backoff multiplier.")
     parser.add_argument("--cloudflare-cooldown", type=float, default=60.0, help="Seconds to wait after Cloudflare challenges.")
+
+
+def add_evaluation_args(parser):
+    parser.add_argument(
+        "--eval-manifest",
+        help="Optional expected manifest CSV. When supplied, evaluate and classify outputs after scraping.",
+    )
+    parser.add_argument(
+        "--eval-report",
+        help="Optional JSON path for the post-scrape evaluation/classification report.",
+    )
+    parser.add_argument(
+        "--output-root",
+        default=str(ROOT),
+        help="Root containing scraper output folders. Default: repository root/current scraper output root.",
+    )
 
 
 def build_parser():
@@ -238,6 +297,7 @@ def build_parser():
         help="When protein names are supplied, resolve missing saved IDs before scraping.",
     )
     scrape_parser.add_argument("--continue-on-error", action="store_true", help="Continue scraping after failures.")
+    add_evaluation_args(scrape_parser)
 
     run_parser = subparsers.add_parser("run", help="Resolve missing IDs, save them, then scrape them.")
     add_shared_lookup_args(run_parser)
@@ -245,6 +305,7 @@ def build_parser():
     run_parser.add_argument("--protein-ids-file", help="Extra proteinAction IDs file.")
     run_parser.add_argument("--ids-file", default=str(DEFAULT_IDS_TXT), help="Scratch ID file written for scraping.")
     run_parser.add_argument("--continue-on-error", action="store_true", help="Continue scraping after failures.")
+    add_evaluation_args(run_parser)
 
     return parser
 

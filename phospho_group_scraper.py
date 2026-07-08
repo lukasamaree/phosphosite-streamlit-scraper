@@ -132,6 +132,11 @@ def first_webscraper(page):
         return amino_acid, protein_name
     return inner
 
+
+def safe_filename_component(value):
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "unknown").strip())
+    return cleaned.strip("_") or "unknown"
+
 async def upstream_scraper(page):
     """
     Scrapes the Upstream Regulation table and returns a dictionary with keys:
@@ -241,26 +246,16 @@ async def references_scraper(page):
 
 async def main(site_id):
     from playwright.async_api import async_playwright
-    import pandas as pd
-    import numpy as np
 
     url = f"https://www.phosphosite.org/siteAction.action?id={site_id}"
     async with async_playwright() as p:
         browser, context, page = await new_browser_context(p)
         await goto_with_cloudflare_retry(page, url, f"siteAction ID {site_id}")
         amino_acid, protein_name = await first_webscraper(page)()
-        data = [{
-            'Amino Acid': amino_acid,
-            'Protein': protein_name
-        }]
-        filename = f'phosphorylation_site_{amino_acid}_{protein_name}.csv'
-        df = pd.DataFrame(data)
-        #df.to_csv(filename, index=False)
-        #print(f"Saved {filename}")
         # Save upstream scraper result, exploded with entity, organism, references
         upstream_data = await upstream_scraper(page)
         print(f"DEBUG: Upstream data scraped: {upstream_data}")
-        exploded_rows = []
+        upstream_rows = []
         entity_pattern = re.compile(r'([A-Za-z0-9\-_,\[\] ]+?)\s*\((human|mouse)\)\s*\(([^\)]+)\)')
         for field, value in upstream_data.items():
             print(f"DEBUG: Processing field '{field}' with value: '{value}'")
@@ -269,30 +264,20 @@ async def main(site_id):
                 entity = match.group(1).strip()
                 organism = match.group(2).strip()
                 references = [int(ref.strip()) for ref in match.group(3).split(',') if ref.strip().isdigit()]
-                exploded_rows.append({
-                    'Field': field,
-                    'Entity': entity,
+                upstream_rows.append({
+                    'Upstream regulation': field,
+                    'Upstream protein': entity.lstrip(', ').strip(),
                     'Organism': organism,
                     'References': references,
                     'Amino Acid': amino_acid,
                     'Protein': protein_name
                 })
                 print(f"DEBUG: Added row - Entity: {entity}, Organism: {organism}, References: {references}")
-        upstream_df = pd.DataFrame(exploded_rows)
-        print(f"DEBUG: Upstream DataFrame shape: {upstream_df.shape}")
-        print(f"DEBUG: Upstream DataFrame columns: {upstream_df.columns.tolist()}")
-        if not upstream_df.empty:
-            print(f"DEBUG: Upstream DataFrame head:\n{upstream_df.head()}")
-            upstream_df['Entity'] = upstream_df['Entity'].str.lstrip(', ').str.strip()
-            upstream_df = upstream_df.rename(columns={
-                'Entity': 'Upstream protein',
-                'Field': 'Upstream regulation'
-            })
-        upstream_filename = f'phosphorylation_site_{amino_acid}_{protein_name}_upstream.csv'
-        # print(f"Saved {upstream_filename}")
+        print(f"DEBUG: Upstream row count: {len(upstream_rows)}")
+
         # Save downstream scraper result, fully exploded
         downstream_data = await downstream_scraper(page, protein_name)
-        exploded_downstream_rows = []
+        downstream_rows = []
         # Regex for effect phrase and references
         effect_pattern = re.compile(r'([^\(]+?)\s*\(([^\)]+)\)')
         entity_pattern = re.compile(r'([A-Za-z0-9\-_,\[\] ]+?)\s*\((human|mouse)\)\s*\(([^\)]+)\)')
@@ -302,13 +287,14 @@ async def main(site_id):
             for match in effect_pattern.finditer(value):
                 effect = match.group(1).strip()
                 references = [int(ref.strip()) for ref in match.group(2).split(',') if ref.strip().isdigit()]
-                exploded_downstream_rows.append({
+                downstream_rows.append({
                     'Downstream regulation': field,
-                    'Downstream protein': effect,
-                    'Organism': '',
+                    'Downstream protein': None,
+                    'Organism': None,
                     'References': references,
                     'Amino Acid': amino_acid,
-                    'Protein': protein_name
+                    'Protein': protein_name,
+                    'Activity': effect,
                 })
         # Explode the last two fields as before
         for field in ['Induce interaction with:', 'Inhibit interaction with:']:
@@ -317,69 +303,78 @@ async def main(site_id):
                 protein = match.group(1).strip()
                 organism = match.group(2).strip()
                 references = [int(ref.strip()) for ref in match.group(3).split(',') if ref.strip().isdigit()]
-                exploded_downstream_rows.append({
+                downstream_rows.append({
                     'Downstream regulation': field,
-                    'Downstream protein': protein,
+                    'Downstream protein': protein.lstrip(', ').strip(),
                     'Organism': organism,
                     'References': references,
                     'Amino Acid': amino_acid,
-                    'Protein': protein_name
+                    'Protein': protein_name,
+                    'Activity': None,
                 })
-        downstream_df = pd.DataFrame(exploded_downstream_rows)
-        if downstream_df.empty:
-            columns = ['Downstream regulation', 'Downstream protein', 'Organism', 'References', 'Amino Acid', 'Protein', 'Activity']
-            downstream_df = pd.DataFrame([{col: float('nan') for col in columns}])
-        else:
-            downstream_df['Downstream protein'] = downstream_df['Downstream protein'].str.lstrip(', ').str.strip()
-            downstream_df['Activity'] = None
-            mask_effect = downstream_df['Downstream regulation'].str.startswith('Effects of')
-            mask_protein = ~mask_effect
-            downstream_df.loc[mask_effect, 'Activity'] = downstream_df.loc[mask_effect, 'Downstream protein']
-            downstream_df.loc[mask_effect, 'Downstream protein'] = None
-            downstream_df.loc[mask_protein, 'Activity'] = None
-            # Replace all empty strings and None with np.nan
-            downstream_df = downstream_df.replace({None: np.nan, '': np.nan})
-        downstream_filename = f'phosphorylation_site_{amino_acid}_{protein_name}_downstream.csv'
-      #  downstream_df.to_csv(downstream_filename, index=False, na_rep='nan')
-       # print(f"Saved {downstream_filename}")
-        # Merge downstream and upstream DataFrames and save as a new CSV
-        # Align columns, filling missing columns with NaN as needed
-        # Add missing columns to upstream_df to match downstream_df
-        for col in downstream_df.columns:
-            if col not in upstream_df.columns:
-                upstream_df[col] = np.nan
-        for col in upstream_df.columns:
-            if col not in downstream_df.columns:
-                downstream_df[col] = np.nan
-        merged_df = pd.concat([downstream_df, upstream_df], ignore_index=True, sort=False)
-        merged_filename = f'phosphorylation_site_{amino_acid}_{protein_name}_merged.csv'
-        # merged_df.to_csv(merged_filename, index=False, na_rep='nan')
-        # print(f"Saved {merged_filename}")
+
+        downstream_columns = [
+            'Downstream regulation',
+            'Downstream protein',
+            'Organism',
+            'References',
+            'Amino Acid',
+            'Protein',
+            'Activity',
+        ]
+        upstream_columns = ['Upstream regulation', 'Upstream protein']
+        if not downstream_rows:
+            downstream_rows = [{column: None for column in downstream_columns}]
+
+        merged_rows = downstream_rows + upstream_rows
         references = await references_scraper(page)
-        if references:
-            ref_df = pd.DataFrame(references)
-            ref_df['Reference Number'] = ref_df['Reference Number'].astype(str)
-            ref_filename = f'phosphorylation_site_{amino_acid}_{protein_name}_references.csv'
-            #ref_df.to_csv(ref_filename, index=False)
-            # Explode the References column, keeping NaN rows
-            if 'References' in merged_df.columns:
-                merged_exploded = merged_df.copy()
-                merged_exploded = merged_exploded.explode('References', ignore_index=True)
-                # If References is NaN, Reference Number will also be NaN
-                merged_exploded['Reference Number'] = merged_exploded['References'].astype('str')
-                # For NaN, astype('str') gives 'nan', which will not match any reference, so merge will keep those rows with NaN PubMed ID
-                merged_with_pubmed = pd.merge(
-                    merged_exploded,
-                    ref_df,
-                    on='Reference Number',
-                    how='left'
-                )
-                # (Optional) If you want to display empty PubMed ID as 'nan' in the CSV
-                folder = protein_name
-                os.makedirs(folder, exist_ok=True)
-                merged_with_pubmed_filename = os.path.join(folder, f'{amino_acid}_{protein_name}.csv')
-                merged_with_pubmed.to_csv(merged_with_pubmed_filename, index=False, na_rep='nan')
-                print(f"Saved {merged_with_pubmed_filename}")
+        pubmed_by_reference = {
+            str(reference.get('Reference Number')): reference.get('PubMed ID')
+            for reference in references
+        }
+        output_rows = []
+        for row in merged_rows:
+            row_references = row.get('References')
+            if isinstance(row_references, list) and row_references:
+                references_to_write = row_references
+            else:
+                references_to_write = [None]
+
+            for reference_number in references_to_write:
+                output_row = {
+                    column: row.get(column)
+                    for column in [*downstream_columns, *upstream_columns]
+                }
+                reference_text = str(reference_number) if reference_number is not None else None
+                output_row['Site ID'] = site_id
+                output_row['Site URL'] = url
+                output_row['Reference Number'] = reference_text
+                output_row['PubMed ID'] = pubmed_by_reference.get(reference_text)
+                output_rows.append(output_row)
+
+        folder = safe_filename_component(protein_name)
+        os.makedirs(folder, exist_ok=True)
+        output_filename = os.path.join(
+            folder,
+            f"{safe_filename_component(amino_acid)}_{safe_filename_component(protein_name)}_site{site_id}.csv",
+        )
+        fieldnames = [
+            'Site ID',
+            'Site URL',
+            *downstream_columns,
+            *upstream_columns,
+            'Reference Number',
+            'PubMed ID',
+        ]
+        with open(output_filename, 'w', newline='', encoding='utf-8') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in output_rows:
+                writer.writerow({
+                    key: 'nan' if value is None or value == '' else value
+                    for key, value in row.items()
+                })
+        print(f"Saved {output_filename}")
         await close_browser_context(browser, context)
 
 

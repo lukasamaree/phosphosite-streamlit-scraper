@@ -57,13 +57,23 @@ Resolve missing IDs, then scrape:
 .venv312/bin/python phosphosite_agent_tool.py run --protein-names-file protein_names.txt --continue-on-error
 ```
 
+Resolve missing IDs, scrape, then classify the output against an expected manifest:
+
+```bash
+.venv312/bin/python phosphosite_agent_tool.py run \
+  --protein-names-file protein_names.txt \
+  --continue-on-error \
+  --eval-manifest scraper_eval/tests/fixtures/manifest.csv \
+  --eval-report scraper_eval_report.json
+```
+
 Scrape known IDs directly:
 
 ```bash
 .venv312/bin/python phosphosite_agent_tool.py scrape --protein-ids-file protein_ids.txt --continue-on-error
 ```
 
-The tool prints a final `SUMMARY_JSON: ...` line for agents to parse.
+The tool prints a final `SUMMARY_JSON: ...` line for agents to parse. When `--eval-manifest` is supplied, that summary includes post-scrape `evaluation` with `failure_class`, `failure_signals`, `recommended_action`, `usable_scrape_rate`, `cloudflare_likely_rate`, and `wrong_protein_rate`.
 
 ## Validation Tool
 
@@ -88,6 +98,7 @@ The dedicated evaluator-agent instructions live in `scraper_eval/AGENT.md`.
 ```
 
 This evaluator checks protein identity before PTM scoring. Wrong protein ID, organism, or UniProt/SwissProt accession is a critical identity failure and forces `final_score = 0`.
+It also classifies each protein result as `VALID_SCRAPE`, `IDENTITY_FAILURE`, `CLOUDFLARE_LIKELY`, `PARTIAL_SCRAPE`, `SCHEMA_FAILURE`, or `EMPTY_OUTPUT`.
 
 ## Direct Scraper
 

@@ -33,6 +33,10 @@ def normalize_key(value):
     return normalize(value).lower()
 
 
+def is_blankish(value):
+    return normalize_key(value) in {"", "nan", "none", "null"}
+
+
 def read_csv_rows(path):
     with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -113,13 +117,54 @@ def extract_sites(rows):
     return {
         normalize(row.get("Amino Acid"))
         for row in rows
-        if normalize(row.get("Amino Acid"))
+        if not is_blankish(row.get("Amino Acid"))
     }
 
 
+def is_placeholder_ptm_row(row):
+    return all(is_blankish(row.get(column)) for column in REQUIRED_OUTPUT_COLUMNS)
+
+
 def duplicate_rows(rows):
-    counts = Counter(site_key(row) for row in rows)
+    counts = Counter(site_key(row) for row in rows if not is_placeholder_ptm_row(row))
     return [key for key, count in counts.items() if count > 1]
+
+
+def classify_result(result):
+    signals = []
+    action = "use_output"
+
+    if result["critical_identity_failure"]:
+        signals.append("critical_identity_failure")
+        return "IDENTITY_FAILURE", signals, "stop_and_resolve_identity"
+
+    if result["schema_errors"]:
+        signals.append("schema_errors")
+    if result["output_row_count"] == 0:
+        signals.append("empty_output")
+    if result["placeholder_row_count"] > 0:
+        signals.append("placeholder_rows_detected")
+    if result["missing_required_sites"]:
+        signals.append("missing_required_sites")
+    if result["duplicate_row_count"] > 0:
+        signals.append("duplicate_rows")
+
+    if "schema_errors" in signals:
+        failure_class = "SCHEMA_FAILURE"
+        action = "inspect_parser_or_output_shape"
+    elif "empty_output" in signals:
+        failure_class = "EMPTY_OUTPUT"
+        action = "retry_later_with_delay"
+    elif "placeholder_rows_detected" in signals:
+        failure_class = "CLOUDFLARE_LIKELY"
+        action = "retry_later_with_delay"
+    elif "missing_required_sites" in signals or "duplicate_rows" in signals:
+        failure_class = "PARTIAL_SCRAPE"
+        action = "retry_missing_or_review_output"
+    else:
+        failure_class = "VALID_SCRAPE"
+
+    return failure_class, signals, action
 
 
 def identity_result(expected, curated_row, output_rows):
@@ -155,7 +200,7 @@ def identity_result(expected, curated_row, output_rows):
     output_organisms = {
         normalize_key(row.get("Organism"))
         for row in output_rows
-        if normalize(row.get("Organism"))
+        if not is_blankish(row.get("Organism"))
     }
     non_human = sorted(value for value in output_organisms if value and value != expected.expected_organism)
     if non_human:
@@ -174,21 +219,30 @@ def ptm_result(expected, output_rows, schema_errors):
     warnings = []
     observed_sites = extract_sites(output_rows)
     missing_sites = [site for site in expected.required_sites if site not in observed_sites]
+    placeholder_rows = [row for row in output_rows if is_placeholder_ptm_row(row)]
     duplicates = duplicate_rows(output_rows)
 
     if not output_rows:
         errors.append(f"{expected.query}: no PTM output rows found")
+    if placeholder_rows:
+        errors.append(f"{expected.query}: placeholder PTM rows detected: {len(placeholder_rows)}")
     if missing_sites:
         errors.append(f"{expected.query}: missing required PTM sites: {', '.join(missing_sites)}")
     if duplicates:
         errors.append(f"{expected.query}: duplicate PTM rows detected: {len(duplicates)}")
 
-    checks = 3
-    failures = int(bool(schema_errors)) + int(bool(missing_sites or not output_rows)) + int(bool(duplicates))
+    checks = 4
+    failures = (
+        int(bool(schema_errors))
+        + int(bool(placeholder_rows or not output_rows))
+        + int(bool(missing_sites or not output_rows))
+        + int(bool(duplicates))
+    )
     ptm_score = max(0.0, (checks - failures) / checks)
     return {
         "ptm_score": ptm_score,
         "missing_required_sites": missing_sites,
+        "placeholder_row_count": len(placeholder_rows),
         "duplicate_row_count": len(duplicates),
         "schema_errors": schema_errors,
         "errors": errors,
@@ -208,6 +262,7 @@ def evaluate_one(expected, curated_rows, output_root):
         ptm = {
             "ptm_score": 0,
             "missing_required_sites": list(expected.required_sites),
+            "placeholder_row_count": 0,
             "duplicate_row_count": 0,
             "schema_errors": schema_errors,
             "errors": ["PTM scoring skipped because identity validation failed."],
@@ -221,7 +276,7 @@ def evaluate_one(expected, curated_rows, output_root):
     final_score = identity["identity_score"] * ptm["ptm_score"] * 100
     errors = identity["errors"] + ptm["errors"]
     warnings = identity["warnings"] + ptm["warnings"]
-    return {
+    result = {
         "query": expected.query,
         "expected_protein_id": expected.expected_protein_id,
         "expected_organism": expected.expected_organism,
@@ -231,12 +286,43 @@ def evaluate_one(expected, curated_rows, output_root):
         "final_score": final_score,
         "critical_identity_failure": identity["critical_identity_failure"],
         "missing_required_sites": ptm["missing_required_sites"],
+        "placeholder_row_count": ptm["placeholder_row_count"],
         "duplicate_row_count": ptm["duplicate_row_count"],
         "schema_errors": ptm["schema_errors"],
         "output_files": [str(path) for path in files],
         "output_row_count": ptm["output_row_count"],
         "errors": errors,
         "warnings": warnings,
+    }
+    failure_class, signals, action = classify_result(result)
+    result["failure_class"] = failure_class
+    result["failure_signals"] = signals
+    result["recommended_action"] = action
+    return result
+
+
+def classification_summary(results):
+    counts = Counter(result["failure_class"] for result in results)
+    total = len(results)
+    valid_count = counts.get("VALID_SCRAPE", 0)
+    identity_passes = sum(1 for result in results if result["identity_score"] == 1)
+    ptm_complete = sum(
+        1
+        for result in results
+        if result["identity_score"] == 1 and result["ptm_score"] == 1
+    )
+    blocked_like = (
+        counts.get("CLOUDFLARE_LIKELY", 0)
+        + counts.get("EMPTY_OUTPUT", 0)
+        + counts.get("SCHEMA_FAILURE", 0)
+    )
+    return {
+        "counts": dict(sorted(counts.items())),
+        "usable_scrape_rate": valid_count / total if total else 0,
+        "identity_pass_rate": identity_passes / total if total else 0,
+        "ptm_completeness_rate": ptm_complete / identity_passes if identity_passes else 0,
+        "blocked_or_invalid_rate": blocked_like / total if total else 0,
+        "cloudflare_likely_rate": counts.get("CLOUDFLARE_LIKELY", 0) / total if total else 0,
     }
 
 
@@ -254,6 +340,7 @@ def evaluate(manifest_path, curated_ids_path, output_root):
         "protein_count": len(results),
         "wrong_protein_rate": wrong_protein_rate,
         "final_score": final_score,
+        "classification": classification_summary(results),
         "errors": errors,
         "warnings": warnings,
         "results": results,
