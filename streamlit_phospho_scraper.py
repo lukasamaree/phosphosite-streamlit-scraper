@@ -257,6 +257,8 @@ with st.sidebar:
     st.subheader("Workflow")
     delay = st.number_input("Delay between requests", min_value=0.0, max_value=30.0, value=5.0, step=0.5)
     delay_jitter = st.slider("Delay jitter", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
+    gentle_mode = st.toggle("Gentle mode", value=True)
+    max_sites_per_run = st.number_input("Max sites per run", min_value=0, max_value=100, value=5, step=1)
     attempts = st.number_input("Agent retry attempts", min_value=1, max_value=10, value=3, step=1)
     cloudflare_cooldown = st.number_input(
         "Cloudflare cooldown",
@@ -272,6 +274,10 @@ with st.sidebar:
     st.caption("Outputs are written under this repository.")
     st.code(str(ROOT), language="text")
     st.caption(f"Playwright browser: {playwright_status}")
+
+effective_delay = max(delay, 20.0) if gentle_mode else delay
+effective_cloudflare_cooldown = max(cloudflare_cooldown, 1800.0) if gentle_mode else cloudflare_cooldown
+effective_max_sites_per_run = max_sites_per_run if gentle_mode else max_sites_per_run
 
 run_tab, lookup_tab, outputs_tab = st.tabs(["Run", "Resolved IDs", "Outputs"])
 
@@ -316,7 +322,7 @@ with run_tab:
                     "--lookup-output",
                     str(LOOKUP_CSV),
                     "--delay",
-                    str(delay),
+                    str(effective_delay),
                     "--delay-jitter",
                     str(delay_jitter),
                 ]
@@ -326,7 +332,7 @@ with run_tab:
                 summary_lines = [
                     f"Input: {len(proteins)} protein symbol(s)",
                     f"Output CSV: {LOOKUP_CSV}",
-                    f"Delay between proteins: {delay}s +/- {delay_jitter:.0%}",
+                    f"Delay between proteins: {effective_delay}s +/- {delay_jitter:.0%}",
                     "Workflow: search name -> choose human result -> read id= from final URL",
                 ]
                 with st.spinner("Searching names, opening human protein pages, and reading final URL IDs..."):
@@ -360,18 +366,18 @@ with run_tab:
                     "--attempts",
                     str(attempts),
                     "--delay",
-                    str(delay),
+                    str(effective_delay),
                     "--delay-jitter",
                     str(delay_jitter),
                     "--cloudflare-cooldown",
-                    str(cloudflare_cooldown),
+                    str(effective_cloudflare_cooldown),
                 ]
 
                 summary_lines = [
                     f"Input: {len(proteins)} protein symbol(s)",
                     f"Attempts per protein: {attempts}",
-                    f"Delay/backoff base: {delay}s +/- {delay_jitter:.0%}",
-                    f"Cloudflare cooldown: {cloudflare_cooldown}s",
+                    f"Delay/backoff base: {effective_delay}s +/- {delay_jitter:.0%}",
+                    f"Cloudflare cooldown: {effective_cloudflare_cooldown}s",
                     f"Checkpoint JSON: {AGENTIC_STATE_JSON}",
                     f"Partial CSV: {LOOKUP_CSV}",
                     "Workflow: resume resolved proteins, retry failures, checkpoint after every attempt",
@@ -410,18 +416,18 @@ with run_tab:
                     "--attempts",
                     str(attempts),
                     "--delay",
-                    str(delay),
+                    str(effective_delay),
                     "--delay-jitter",
                     str(delay_jitter),
                     "--cloudflare-cooldown",
-                    str(cloudflare_cooldown),
+                    str(effective_cloudflare_cooldown),
                 ]
                 summary_lines = [
                     f"Saved IDs available: {len(usable_lookup_df)}",
                     f"Missing IDs to resolve now: {len(missing_proteins)}",
                     f"Missing proteins: {', '.join(missing_proteins)}",
-                    f"Delay/backoff base: {delay}s +/- {delay_jitter:.0%}",
-                    f"Cloudflare cooldown: {cloudflare_cooldown}s",
+                    f"Delay/backoff base: {effective_delay}s +/- {delay_jitter:.0%}",
+                    f"Cloudflare cooldown: {effective_cloudflare_cooldown}s",
                     f"Checkpoint JSON: {AGENTIC_STATE_JSON}",
                     "Workflow: use saved IDs first, resolve only missing proteins, then scrape",
                 ]
@@ -453,11 +459,13 @@ with run_tab:
                     "--protein-ids-file",
                     str(IDS_TXT),
                     "--delay",
-                    str(delay),
+                    str(effective_delay),
                     "--delay-jitter",
                     str(delay_jitter),
                     "--cloudflare-cooldown",
-                    str(cloudflare_cooldown),
+                    str(effective_cloudflare_cooldown),
+                    "--max-sites-per-run",
+                    str(effective_max_sites_per_run),
                     "--scrape-state",
                     str(SCRAPE_STATE_JSON),
                 ]
@@ -469,9 +477,11 @@ with run_tab:
                     f"ID file: {IDS_TXT}",
                     f"Saved ID CSV: {LOOKUP_CSV}",
                     f"Scrape checkpoint JSON: {SCRAPE_STATE_JSON}",
-                    f"Cloudflare circuit-breaker cooldown: {cloudflare_cooldown}s",
+                    f"Gentle mode: {'on' if gentle_mode else 'off'}",
+                    f"Max sites per run: {effective_max_sites_per_run or 'unlimited'}",
+                    f"Cloudflare circuit-breaker cooldown: {effective_cloudflare_cooldown}s",
                     f"Missing proteins skipped: {len(missing_proteins) if requested_proteins else 0}",
-                    f"Delay between IDs/sites: {delay}s +/- {delay_jitter:.0%}",
+                    f"Delay between IDs/sites: {effective_delay}s +/- {delay_jitter:.0%}",
                     "Workflow: open protein page -> collect human siteAction links -> scrape each site -> write CSVs",
                 ]
                 with st.spinner(f"Scraping {len(ids)} protein ID(s)..."):

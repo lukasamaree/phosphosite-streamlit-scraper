@@ -230,6 +230,7 @@ async def scrape_ids(args):
         args.force_rescrape,
         args.cloudflare_cooldown,
         args.continue_after_cloudflare,
+        args.max_sites_per_run,
     )
 
     summary = {
@@ -268,6 +269,7 @@ def add_shared_lookup_args(parser):
     parser.add_argument("--scrape-state", default=str(DEFAULT_SCRAPE_STATE_JSON), help="Resolved-ID scrape checkpoint JSON.")
     parser.add_argument("--force-rescrape", action="store_true", help="Ignore completed site IDs in the scrape checkpoint.")
     parser.add_argument("--continue-after-cloudflare", action="store_true", help="Continue scraping after persistent Cloudflare instead of stopping at the checkpoint.")
+    parser.add_argument("--max-sites-per-run", type=int, default=5, help="Maximum unresolved siteAction pages to attempt per run. Use 0 for no limit.")
 
 
 def add_evaluation_args(parser):

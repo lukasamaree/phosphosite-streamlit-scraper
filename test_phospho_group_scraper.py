@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from phospho_group_scraper import load_scrape_state, resolve_protein_name_on_page, run_site_batch
+from phospho_group_scraper import (
+    load_scrape_state,
+    order_site_ids_for_resume,
+    resolve_protein_name_on_page,
+    run_site_batch,
+)
 
 
 class FakeLookupPage:
@@ -139,6 +144,49 @@ class ScrapeCheckpointTests(unittest.IsolatedAsyncioTestCase):
             protein_state = saved["proteins"]["570"]
             self.assertEqual(protein_state["cloudflare_blocked_site_ids"], [111])
             self.assertEqual(protein_state["completed_site_ids"], [])
+
+    async def test_max_sites_per_run_stops_after_limit(self):
+        state = {
+            "proteins": {
+                "570": {
+                    "protein_id": 570,
+                    "status": "sites_discovered",
+                    "discovered_site_ids": [111, 222],
+                    "completed_site_ids": [],
+                    "failed_site_ids": [],
+                    "cloudflare_blocked_site_ids": [],
+                    "site_outputs": {},
+                    "site_errors": {},
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "scrape_state.json"
+            with patch("phospho_group_scraper.main", new=AsyncMock(return_value="site.csv")) as fake_main:
+                result = await run_site_batch(
+                    [111, 222],
+                    delay=0,
+                    continue_on_error=True,
+                    protein_id=570,
+                    scrape_state=state,
+                    scrape_state_path=state_path,
+                    max_sites_per_run=1,
+                )
+
+        fake_main.assert_awaited_once_with(111)
+        self.assertEqual(result["status"], "stopped_after_site_limit")
+
+    def test_resume_order_puts_cloudflare_blocked_sites_last(self):
+        protein_record = {
+            "completed_site_ids": [111],
+            "failed_site_ids": [222],
+            "cloudflare_blocked_site_ids": [333],
+        }
+
+        ordered = order_site_ids_for_resume([111, 222, 333, 444], protein_record)
+
+        self.assertEqual(ordered, [444, 222, 333, 111])
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ DEFAULT_CLOUDFLARE_RETRIES = 3
 DEFAULT_CLOUDFLARE_WAIT_SECONDS = 10
 DEFAULT_DELAY_JITTER = 0.5
 DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS = 900
+DEFAULT_MAX_SITES_PER_RUN = 5
 ROOT = Path(__file__).resolve().parent
 BROWSER_STATE_PATH = ROOT / ".phosphosite_browser_state.json"
 DEFAULT_SCRAPE_STATE_PATH = ROOT / "curated_protein_ids" / "scrape_state.json"
@@ -175,6 +176,23 @@ def mark_protein_sites_discovered(state, protein_id, site_ids, state_path):
     record["updated_at"] = now_iso()
     print(f"CHECKPOINT: protein {protein_id} discovered {len(site_ids)} site(s)", flush=True)
     save_scrape_state(state, state_path)
+
+
+def order_site_ids_for_resume(site_ids, protein_record):
+    completed = set(int(site_id) for site_id in protein_record.get("completed_site_ids", []))
+    cloudflare_blocked = set(int(site_id) for site_id in protein_record.get("cloudflare_blocked_site_ids", []))
+    failed = set(int(site_id) for site_id in protein_record.get("failed_site_ids", []))
+    unique_site_ids = list(dict.fromkeys(int(site_id) for site_id in site_ids))
+
+    never_attempted = [
+        site_id
+        for site_id in unique_site_ids
+        if site_id not in completed and site_id not in failed and site_id not in cloudflare_blocked
+    ]
+    failed_non_cloudflare = [site_id for site_id in unique_site_ids if site_id in failed and site_id not in completed]
+    blocked = [site_id for site_id in unique_site_ids if site_id in cloudflare_blocked and site_id not in completed]
+    already_completed = [site_id for site_id in unique_site_ids if site_id in completed]
+    return never_attempted + failed_non_cloudflare + blocked + already_completed
 
 
 async def is_cloudflare_challenge_page(page):
@@ -625,6 +643,7 @@ async def scrape_protein(
     force_rescrape=False,
     cloudflare_cooldown=DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS,
     continue_after_cloudflare=False,
+    max_sites_per_run=DEFAULT_MAX_SITES_PER_RUN,
 ):
     if scrape_state is None:
         scrape_state = load_scrape_state(scrape_state_path)
@@ -655,6 +674,7 @@ async def scrape_protein(
         force_rescrape=force_rescrape,
         cloudflare_cooldown=cloudflare_cooldown,
         continue_after_cloudflare=continue_after_cloudflare,
+        max_sites_per_run=max_sites_per_run,
     )
     print(f"DONE: protein ID {protein_id}: completed site scrape batch", flush=True)
     return site_result
@@ -1043,6 +1063,12 @@ def build_parser():
         help="Keep scraping the next site/protein after persistent Cloudflare. Default stops to avoid repeated challenges.",
     )
     parser.add_argument(
+        "--max-sites-per-run",
+        type=int,
+        default=DEFAULT_MAX_SITES_PER_RUN,
+        help="Maximum unresolved siteAction pages to attempt per run before checkpointing and stopping. Use 0 for no limit.",
+    )
+    parser.add_argument(
         "--scrape-state",
         default=str(DEFAULT_SCRAPE_STATE_PATH),
         help="JSON checkpoint for resolved-ID protein/site scraping.",
@@ -1071,6 +1097,7 @@ async def run_site_batch(
     force_rescrape=False,
     cloudflare_cooldown=DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS,
     continue_after_cloudflare=False,
+    max_sites_per_run=DEFAULT_MAX_SITES_PER_RUN,
 ):
     if not site_ids:
         raise ValueError("No SITE_IDs were provided.")
@@ -1078,18 +1105,39 @@ async def run_site_batch(
     print(f"START: scraping {len(site_ids)} siteAction ID(s)", flush=True)
     failures = []
     stopped_on_cloudflare = False
-    for index, site_id in enumerate(site_ids, start=1):
+    stopped_after_site_limit = False
+    attempted_sites = 0
+    ordered_site_ids = site_ids
+    if protein_id is not None and scrape_state is not None:
+        protein_record = get_protein_state(scrape_state, protein_id)
+        ordered_site_ids = order_site_ids_for_resume(site_ids, protein_record)
+        print(
+            "RESUME_ORDER: never-attempted and ordinary failures before Cloudflare-blocked sites; "
+            "completed sites are skipped.",
+            flush=True,
+        )
+
+    for index, site_id in enumerate(ordered_site_ids, start=1):
         if protein_id is not None and scrape_state is not None and not force_rescrape:
             protein_record = get_protein_state(scrape_state, protein_id)
             if int(site_id) in protein_record.get("completed_site_ids", []):
                 print(
-                    f"[{index}/{len(site_ids)}] SKIP siteAction ID {site_id}: "
+                    f"[{index}/{len(ordered_site_ids)}] SKIP siteAction ID {site_id}: "
                     f"already completed for protein {protein_id}",
                     flush=True,
                 )
                 continue
+        if max_sites_per_run and attempted_sites >= max_sites_per_run:
+            stopped_after_site_limit = True
+            print(
+                f"CHECKPOINT: max sites per run reached ({max_sites_per_run}); "
+                "stopping before next siteAction request.",
+                flush=True,
+            )
+            break
 
-        print(f"[{index}/{len(site_ids)}] START siteAction ID {site_id}", flush=True)
+        attempted_sites += 1
+        print(f"[{index}/{len(ordered_site_ids)}] START siteAction ID {site_id}", flush=True)
         if protein_id is not None and scrape_state is not None:
             mark_site_started(scrape_state, protein_id, site_id, scrape_state_path)
         try:
@@ -1119,8 +1167,14 @@ async def run_site_batch(
             if not continue_on_error:
                 break
 
-        if index < len(site_ids) and not stopped_on_cloudflare:
+        if index < len(ordered_site_ids) and not stopped_on_cloudflare and not stopped_after_site_limit:
             await sleep_between_requests(delay, delay_jitter, "siteAction scrape")
+
+    if stopped_after_site_limit:
+        return {
+            "failed_site_ids": [site_id for site_id, _ in failures],
+            "status": "stopped_after_site_limit",
+        }
 
     if failures:
         failed_ids = ", ".join(str(site_id) for site_id, _ in failures)
@@ -1144,6 +1198,7 @@ async def run_protein_batch(
     force_rescrape=False,
     cloudflare_cooldown=DEFAULT_CLOUDFLARE_COOLDOWN_SECONDS,
     continue_after_cloudflare=False,
+    max_sites_per_run=DEFAULT_MAX_SITES_PER_RUN,
 ):
     if not protein_ids:
         raise ValueError("No protein IDs were provided.")
@@ -1165,6 +1220,7 @@ async def run_protein_batch(
                 force_rescrape=force_rescrape,
                 cloudflare_cooldown=cloudflare_cooldown,
                 continue_after_cloudflare=continue_after_cloudflare,
+                max_sites_per_run=max_sites_per_run,
             )
             failed_site_ids = site_result.get("failed_site_ids", []) if site_result else []
             if failed_site_ids:
@@ -1179,6 +1235,17 @@ async def run_protein_batch(
                     "failed_protein_ids": [],
                     "failed_site_ids_by_protein": site_failures_by_protein,
                     "status": "stopped_on_cloudflare",
+                }
+            if site_result and site_result.get("status") == "stopped_after_site_limit":
+                print(
+                    f"CHECKPOINT: protein {protein_id} stopped after max-sites-per-run; "
+                    "ending resolved-ID protein batch so it can resume later.",
+                    flush=True,
+                )
+                return {
+                    "failed_protein_ids": [],
+                    "failed_site_ids_by_protein": site_failures_by_protein,
+                    "status": "stopped_after_site_limit",
                 }
             print(f"[{index}/{len(protein_ids)}] DONE protein ID {protein_id}", flush=True)
         except Exception as exc:
@@ -1297,6 +1364,7 @@ if __name__ == "__main__":
                 args.force_rescrape,
                 args.cloudflare_cooldown,
                 args.continue_after_cloudflare,
+                args.max_sites_per_run,
             )
         )
     if site_ids:

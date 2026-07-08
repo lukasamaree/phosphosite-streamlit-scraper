@@ -93,11 +93,13 @@ Use `--delay` as the base wait and `--delay-jitter` to randomize waits around th
   --protein-names-file protein_names.txt \
   --delay 20 \
   --delay-jitter 0.5 \
-  --cloudflare-cooldown 180 \
+  --cloudflare-cooldown 1800 \
+  --max-sites-per-run 5 \
   --continue-on-error
 ```
 
 With `--delay 20 --delay-jitter 0.5`, each between-request wait is randomly chosen from roughly 10 to 30 seconds. Cloudflare retry waits use randomized exponential backoff.
+With `--max-sites-per-run 5`, resolved-ID scraping checkpoints and stops voluntarily after five attempted site pages. Cloudflare-blocked sites are retried after never-attempted sites.
 
 For already-resolved protein IDs, the scraper writes:
 
