@@ -78,6 +78,7 @@ The validator checks that curated IDs have expected columns/URLs, scraped CSVs a
 ## Identity-First Scraper Evaluation
 
 Use `scraper_eval/` when you want to score actual scraper outputs against an expected manifest.
+The dedicated evaluator-agent instructions live in `scraper_eval/AGENT.md`.
 
 ```bash
 .venv312/bin/python -m scraper_eval.evaluate_scraper_outputs \

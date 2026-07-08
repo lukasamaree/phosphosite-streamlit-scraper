@@ -13,7 +13,7 @@
   - Rerun only failed or missing proteins unless the user asks for a full refresh.
 - Prefer the reusable tool wrapper `phosphosite_agent_tool.py` for execution after Codex has made the decision.
 - After scraping, validate outputs with `.venv312/bin/python validate_scrape_outputs.py` and parse the final `VALIDATION_JSON: ...` line.
-- For deterministic scraper-quality scoring, use `scraper_eval/`. It gates PTM scoring behind protein identity and prints `EVAL_JSON: ...`.
+- For deterministic scraper-quality scoring, use the separate evaluator-agent instructions in `scraper_eval/AGENT.md`. It gates PTM scoring behind protein identity and prints `EVAL_JSON: ...`.
 - Resolve and save IDs for a worklist with `.venv312/bin/python phosphosite_agent_tool.py resolve --protein-names-file protein_names.txt`.
 - Scrape from saved IDs, resolving missing names first, with `.venv312/bin/python phosphosite_agent_tool.py run --protein-names-file protein_names.txt --continue-on-error`.
 - Scrape already-known IDs with `.venv312/bin/python phosphosite_agent_tool.py scrape --protein-ids-file protein_ids.txt --continue-on-error`.
