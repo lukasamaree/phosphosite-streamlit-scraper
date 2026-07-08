@@ -82,7 +82,7 @@ The scraper does not bypass Cloudflare. It is designed to reduce repeated failed
 - Detect challenge pages.
 - Stop aggressive retries.
 - Save lookup state and partial resolved IDs after each attempt.
-- Reuse cached protein IDs and completed outputs.
+- Reuse cached protein IDs and completed resolved-ID scrape checkpoints.
 - Back off with randomized jitter.
 - Resume later from the next missing protein.
 
@@ -98,6 +98,14 @@ Use `--delay` as the base wait and `--delay-jitter` to randomize waits around th
 ```
 
 With `--delay 20 --delay-jitter 0.5`, each between-request wait is randomly chosen from roughly 10 to 30 seconds. Cloudflare retry waits use randomized exponential backoff.
+
+For already-resolved protein IDs, the scraper writes:
+
+```text
+curated_protein_ids/scrape_state.json
+```
+
+That file tracks protein-page/site-discovery progress, discovered site IDs, completed site IDs, Cloudflare-blocked site IDs, failed site IDs, and output CSV paths. On the next run, completed site IDs are skipped unless you pass `--force-rescrape`.
 
 ## Validation Tool
 

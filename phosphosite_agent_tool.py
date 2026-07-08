@@ -14,6 +14,7 @@ CURATION_DIR = ROOT / "curated_protein_ids"
 DEFAULT_STATE_JSON = CURATION_DIR / "lookup_state.json"
 DEFAULT_LOOKUP_CSV = CURATION_DIR / "resolved_protein_ids.csv"
 DEFAULT_IDS_TXT = CURATION_DIR / "protein_ids.txt"
+DEFAULT_SCRAPE_STATE_JSON = CURATION_DIR / "scrape_state.json"
 
 
 def unique_names(names):
@@ -220,7 +221,14 @@ async def scrape_ids(args):
 
     ids_file = write_ids_file(ids, args.ids_file)
     print(f"TOOL: scraping {len(ids)} protein ID(s) from {ids_file}", flush=True)
-    scrape_result = await run_protein_batch(ids, args.delay, args.continue_on_error, args.delay_jitter)
+    scrape_result = await run_protein_batch(
+        ids,
+        args.delay,
+        args.continue_on_error,
+        args.delay_jitter,
+        args.scrape_state,
+        args.force_rescrape,
+    )
 
     summary = {
         "protein_ids": ids,
@@ -255,6 +263,8 @@ def add_shared_lookup_args(parser):
     parser.add_argument("--delay-jitter", type=float, default=0.5, help="Randomize scraper waits by this fraction around --delay.")
     parser.add_argument("--backoff", type=float, default=2.0, help="Retry backoff multiplier.")
     parser.add_argument("--cloudflare-cooldown", type=float, default=60.0, help="Seconds to wait after Cloudflare challenges.")
+    parser.add_argument("--scrape-state", default=str(DEFAULT_SCRAPE_STATE_JSON), help="Resolved-ID scrape checkpoint JSON.")
+    parser.add_argument("--force-rescrape", action="store_true", help="Ignore completed site IDs in the scrape checkpoint.")
 
 
 def add_evaluation_args(parser):

@@ -1,6 +1,10 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
-from phospho_group_scraper import resolve_protein_name_on_page
+from phospho_group_scraper import load_scrape_state, resolve_protein_name_on_page, run_site_batch
 
 
 class FakeLookupPage:
@@ -53,6 +57,49 @@ class ProteinLookupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["organism"], "human")
         self.assertEqual(result["url"], "https://www.phosphosite.org/proteinAction.action?id=570&showAllSites=true")
         self.assertEqual(result["source"], "human_search_result_url_confirm_redirect")
+
+
+class ScrapeCheckpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_site_ids_are_skipped_when_resuming_resolved_id_scrape(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "scrape_state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "proteins": {
+                            "570": {
+                                "protein_id": 570,
+                                "status": "partial",
+                                "discovered_site_ids": [111, 222],
+                                "completed_site_ids": [111],
+                                "failed_site_ids": [],
+                                "cloudflare_blocked_site_ids": [],
+                                "site_outputs": {"111": "existing.csv"},
+                                "site_errors": {},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = load_scrape_state(state_path)
+
+            with patch("phospho_group_scraper.main", new=AsyncMock(return_value="new.csv")) as fake_main:
+                result = await run_site_batch(
+                    [111, 222],
+                    delay=0,
+                    continue_on_error=True,
+                    protein_id=570,
+                    scrape_state=state,
+                    scrape_state_path=state_path,
+                )
+
+            fake_main.assert_awaited_once_with(222)
+            self.assertEqual(result["status"], "complete")
+            saved = load_scrape_state(state_path)
+            protein_state = saved["proteins"]["570"]
+            self.assertEqual(protein_state["completed_site_ids"], [111, 222])
+            self.assertEqual(protein_state["site_outputs"]["222"], "new.csv")
 
 
 if __name__ == "__main__":

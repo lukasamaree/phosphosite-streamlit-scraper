@@ -1,9 +1,11 @@
 import asyncio
 import argparse
 import csv
+import json
 import re
 import os
 import random
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -13,6 +15,7 @@ DEFAULT_CLOUDFLARE_WAIT_SECONDS = 10
 DEFAULT_DELAY_JITTER = 0.5
 ROOT = Path(__file__).resolve().parent
 BROWSER_STATE_PATH = ROOT / ".phosphosite_browser_state.json"
+DEFAULT_SCRAPE_STATE_PATH = ROOT / "curated_protein_ids" / "scrape_state.json"
 
 
 def cloudflare_wait_seconds(base_wait, attempt):
@@ -39,6 +42,138 @@ async def sleep_between_requests(base_delay, jitter, label):
         flush=True,
     )
     await asyncio.sleep(wait_for)
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def is_cloudflare_error(error):
+    return "cloudflare challenge" in str(error).lower()
+
+
+def load_scrape_state(path=DEFAULT_SCRAPE_STATE_PATH):
+    path = Path(path)
+    if not path.exists():
+        return {"proteins": {}, "updated_at": None}
+    with open(path, "r", encoding="utf-8") as handle:
+        state = json.load(handle)
+    state.setdefault("proteins", {})
+    return state
+
+
+def save_scrape_state(state, path=DEFAULT_SCRAPE_STATE_PATH):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state["updated_at"] = now_iso()
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, indent=2, sort_keys=True)
+
+
+def get_protein_state(state, protein_id):
+    proteins = state.setdefault("proteins", {})
+    record = proteins.setdefault(
+        str(protein_id),
+        {
+            "protein_id": int(protein_id),
+            "status": "pending",
+            "discovered_site_ids": [],
+            "completed_site_ids": [],
+            "failed_site_ids": [],
+            "cloudflare_blocked_site_ids": [],
+            "site_outputs": {},
+            "site_errors": {},
+            "updated_at": None,
+        },
+    )
+    record.setdefault("discovered_site_ids", [])
+    record.setdefault("completed_site_ids", [])
+    record.setdefault("failed_site_ids", [])
+    record.setdefault("cloudflare_blocked_site_ids", [])
+    record.setdefault("site_outputs", {})
+    record.setdefault("site_errors", {})
+    return record
+
+
+def add_unique_id(values, value):
+    if int(value) not in values:
+        values.append(int(value))
+
+
+def remove_id(values, value):
+    value = int(value)
+    while value in values:
+        values.remove(value)
+
+
+def mark_site_started(state, protein_id, site_id, state_path):
+    record = get_protein_state(state, protein_id)
+    record["status"] = "running"
+    record["current_site_id"] = int(site_id)
+    record["updated_at"] = now_iso()
+    print(f"CHECKPOINT: protein {protein_id} site {site_id} started", flush=True)
+    save_scrape_state(state, state_path)
+
+
+def mark_site_completed(state, protein_id, site_id, output_path, state_path):
+    record = get_protein_state(state, protein_id)
+    add_unique_id(record["completed_site_ids"], site_id)
+    remove_id(record["failed_site_ids"], site_id)
+    remove_id(record["cloudflare_blocked_site_ids"], site_id)
+    record["site_outputs"][str(site_id)] = str(output_path)
+    record.pop("current_site_id", None)
+    record["status"] = "partial" if len(record["completed_site_ids"]) < len(record["discovered_site_ids"]) else "complete"
+    record["updated_at"] = now_iso()
+    print(f"CHECKPOINT: protein {protein_id} site {site_id} completed", flush=True)
+    save_scrape_state(state, state_path)
+
+
+def mark_site_failed(state, protein_id, site_id, error, state_path):
+    record = get_protein_state(state, protein_id)
+    error_type = "cloudflare" if is_cloudflare_error(error) else "scrape"
+    target_list = "cloudflare_blocked_site_ids" if error_type == "cloudflare" else "failed_site_ids"
+    add_unique_id(record[target_list], site_id)
+    remove_id(record["completed_site_ids"], site_id)
+    record["site_errors"][str(site_id)] = {
+        "error_type": error_type,
+        "message": str(error),
+        "updated_at": now_iso(),
+    }
+    record.pop("current_site_id", None)
+    record["status"] = "cloudflare_blocked" if error_type == "cloudflare" else "partial"
+    record["updated_at"] = now_iso()
+    print(
+        f"CHECKPOINT: protein {protein_id} site {site_id} marked {record['status']} "
+        f"({error_type})",
+        flush=True,
+    )
+    save_scrape_state(state, state_path)
+
+
+def mark_protein_stage_failed(state, protein_id, stage, error, state_path):
+    record = get_protein_state(state, protein_id)
+    error_type = "cloudflare" if is_cloudflare_error(error) else "scrape"
+    record["status"] = "cloudflare_blocked" if error_type == "cloudflare" else "failed"
+    record["blocked_stage"] = stage if error_type == "cloudflare" else None
+    record["last_error"] = str(error)
+    record["last_error_type"] = error_type
+    record["updated_at"] = now_iso()
+    print(
+        f"CHECKPOINT: protein {protein_id} marked {record['status']} at {stage} "
+        f"({error_type})",
+        flush=True,
+    )
+    save_scrape_state(state, state_path)
+
+
+def mark_protein_sites_discovered(state, protein_id, site_ids, state_path):
+    record = get_protein_state(state, protein_id)
+    record["discovered_site_ids"] = [int(site_id) for site_id in site_ids]
+    record["status"] = "sites_discovered"
+    record["blocked_stage"] = None
+    record["updated_at"] = now_iso()
+    print(f"CHECKPOINT: protein {protein_id} discovered {len(site_ids)} site(s)", flush=True)
+    save_scrape_state(state, state_path)
 
 
 async def is_cloudflare_challenge_page(page):
@@ -273,132 +408,135 @@ async def main(site_id):
     url = f"https://www.phosphosite.org/siteAction.action?id={site_id}"
     async with async_playwright() as p:
         browser, context, page = await new_browser_context(p)
-        await goto_with_cloudflare_retry(page, url, f"siteAction ID {site_id}")
-        amino_acid, protein_name = await first_webscraper(page)()
-        # Save upstream scraper result, exploded with entity, organism, references
-        upstream_data = await upstream_scraper(page)
-        print(f"DEBUG: Upstream data scraped: {upstream_data}")
-        upstream_rows = []
-        entity_pattern = re.compile(r'([A-Za-z0-9\-_,\[\] ]+?)\s*\((human|mouse)\)\s*\(([^\)]+)\)')
-        for field, value in upstream_data.items():
-            print(f"DEBUG: Processing field '{field}' with value: '{value}'")
-            # Find all matches like NAME (organism) ( numbers )
-            for match in entity_pattern.finditer(value):
-                entity = match.group(1).strip()
-                organism = match.group(2).strip()
-                references = [int(ref.strip()) for ref in match.group(3).split(',') if ref.strip().isdigit()]
-                upstream_rows.append({
-                    'Upstream regulation': field,
-                    'Upstream protein': entity.lstrip(', ').strip(),
-                    'Organism': organism,
-                    'References': references,
-                    'Amino Acid': amino_acid,
-                    'Protein': protein_name
-                })
-                print(f"DEBUG: Added row - Entity: {entity}, Organism: {organism}, References: {references}")
-        print(f"DEBUG: Upstream row count: {len(upstream_rows)}")
+        try:
+            await goto_with_cloudflare_retry(page, url, f"siteAction ID {site_id}")
+            amino_acid, protein_name = await first_webscraper(page)()
+            # Save upstream scraper result, exploded with entity, organism, references
+            upstream_data = await upstream_scraper(page)
+            print(f"DEBUG: Upstream data scraped: {upstream_data}")
+            upstream_rows = []
+            entity_pattern = re.compile(r'([A-Za-z0-9\-_,\[\] ]+?)\s*\((human|mouse)\)\s*\(([^\)]+)\)')
+            for field, value in upstream_data.items():
+                print(f"DEBUG: Processing field '{field}' with value: '{value}'")
+                # Find all matches like NAME (organism) ( numbers )
+                for match in entity_pattern.finditer(value):
+                    entity = match.group(1).strip()
+                    organism = match.group(2).strip()
+                    references = [int(ref.strip()) for ref in match.group(3).split(',') if ref.strip().isdigit()]
+                    upstream_rows.append({
+                        'Upstream regulation': field,
+                        'Upstream protein': entity.lstrip(', ').strip(),
+                        'Organism': organism,
+                        'References': references,
+                        'Amino Acid': amino_acid,
+                        'Protein': protein_name
+                    })
+                    print(f"DEBUG: Added row - Entity: {entity}, Organism: {organism}, References: {references}")
+            print(f"DEBUG: Upstream row count: {len(upstream_rows)}")
 
-        # Save downstream scraper result, fully exploded
-        downstream_data = await downstream_scraper(page, protein_name)
-        downstream_rows = []
-        # Regex for effect phrase and references
-        effect_pattern = re.compile(r'([^\(]+?)\s*\(([^\)]+)\)')
-        entity_pattern = re.compile(r'([A-Za-z0-9\-_,\[\] ]+?)\s*\((human|mouse)\)\s*\(([^\)]+)\)')
-        # Explode the first two fields using regex
-        for field in [f'Effects of modification on {protein_name}', 'Effects of modification on biological processes']:
-            value = downstream_data.get(field, '')
-            for match in effect_pattern.finditer(value):
-                effect = match.group(1).strip()
-                references = [int(ref.strip()) for ref in match.group(2).split(',') if ref.strip().isdigit()]
-                downstream_rows.append({
-                    'Downstream regulation': field,
-                    'Downstream protein': None,
-                    'Organism': None,
-                    'References': references,
-                    'Amino Acid': amino_acid,
-                    'Protein': protein_name,
-                    'Activity': effect,
-                })
-        # Explode the last two fields as before
-        for field in ['Induce interaction with:', 'Inhibit interaction with:']:
-            value = downstream_data.get(field, '')
-            for match in entity_pattern.finditer(value):
-                protein = match.group(1).strip()
-                organism = match.group(2).strip()
-                references = [int(ref.strip()) for ref in match.group(3).split(',') if ref.strip().isdigit()]
-                downstream_rows.append({
-                    'Downstream regulation': field,
-                    'Downstream protein': protein.lstrip(', ').strip(),
-                    'Organism': organism,
-                    'References': references,
-                    'Amino Acid': amino_acid,
-                    'Protein': protein_name,
-                    'Activity': None,
-                })
+            # Save downstream scraper result, fully exploded
+            downstream_data = await downstream_scraper(page, protein_name)
+            downstream_rows = []
+            # Regex for effect phrase and references
+            effect_pattern = re.compile(r'([^\(]+?)\s*\(([^\)]+)\)')
+            entity_pattern = re.compile(r'([A-Za-z0-9\-_,\[\] ]+?)\s*\((human|mouse)\)\s*\(([^\)]+)\)')
+            # Explode the first two fields using regex
+            for field in [f'Effects of modification on {protein_name}', 'Effects of modification on biological processes']:
+                value = downstream_data.get(field, '')
+                for match in effect_pattern.finditer(value):
+                    effect = match.group(1).strip()
+                    references = [int(ref.strip()) for ref in match.group(2).split(',') if ref.strip().isdigit()]
+                    downstream_rows.append({
+                        'Downstream regulation': field,
+                        'Downstream protein': None,
+                        'Organism': None,
+                        'References': references,
+                        'Amino Acid': amino_acid,
+                        'Protein': protein_name,
+                        'Activity': effect,
+                    })
+            # Explode the last two fields as before
+            for field in ['Induce interaction with:', 'Inhibit interaction with:']:
+                value = downstream_data.get(field, '')
+                for match in entity_pattern.finditer(value):
+                    protein = match.group(1).strip()
+                    organism = match.group(2).strip()
+                    references = [int(ref.strip()) for ref in match.group(3).split(',') if ref.strip().isdigit()]
+                    downstream_rows.append({
+                        'Downstream regulation': field,
+                        'Downstream protein': protein.lstrip(', ').strip(),
+                        'Organism': organism,
+                        'References': references,
+                        'Amino Acid': amino_acid,
+                        'Protein': protein_name,
+                        'Activity': None,
+                    })
 
-        downstream_columns = [
-            'Downstream regulation',
-            'Downstream protein',
-            'Organism',
-            'References',
-            'Amino Acid',
-            'Protein',
-            'Activity',
-        ]
-        upstream_columns = ['Upstream regulation', 'Upstream protein']
-        if not downstream_rows:
-            downstream_rows = [{column: None for column in downstream_columns}]
+            downstream_columns = [
+                'Downstream regulation',
+                'Downstream protein',
+                'Organism',
+                'References',
+                'Amino Acid',
+                'Protein',
+                'Activity',
+            ]
+            upstream_columns = ['Upstream regulation', 'Upstream protein']
+            if not downstream_rows:
+                downstream_rows = [{column: None for column in downstream_columns}]
 
-        merged_rows = downstream_rows + upstream_rows
-        references = await references_scraper(page)
-        pubmed_by_reference = {
-            str(reference.get('Reference Number')): reference.get('PubMed ID')
-            for reference in references
-        }
-        output_rows = []
-        for row in merged_rows:
-            row_references = row.get('References')
-            if isinstance(row_references, list) and row_references:
-                references_to_write = row_references
-            else:
-                references_to_write = [None]
+            merged_rows = downstream_rows + upstream_rows
+            references = await references_scraper(page)
+            pubmed_by_reference = {
+                str(reference.get('Reference Number')): reference.get('PubMed ID')
+                for reference in references
+            }
+            output_rows = []
+            for row in merged_rows:
+                row_references = row.get('References')
+                if isinstance(row_references, list) and row_references:
+                    references_to_write = row_references
+                else:
+                    references_to_write = [None]
 
-            for reference_number in references_to_write:
-                output_row = {
-                    column: row.get(column)
-                    for column in [*downstream_columns, *upstream_columns]
-                }
-                reference_text = str(reference_number) if reference_number is not None else None
-                output_row['Site ID'] = site_id
-                output_row['Site URL'] = url
-                output_row['Reference Number'] = reference_text
-                output_row['PubMed ID'] = pubmed_by_reference.get(reference_text)
-                output_rows.append(output_row)
+                for reference_number in references_to_write:
+                    output_row = {
+                        column: row.get(column)
+                        for column in [*downstream_columns, *upstream_columns]
+                    }
+                    reference_text = str(reference_number) if reference_number is not None else None
+                    output_row['Site ID'] = site_id
+                    output_row['Site URL'] = url
+                    output_row['Reference Number'] = reference_text
+                    output_row['PubMed ID'] = pubmed_by_reference.get(reference_text)
+                    output_rows.append(output_row)
 
-        folder = safe_filename_component(protein_name)
-        os.makedirs(folder, exist_ok=True)
-        output_filename = os.path.join(
-            folder,
-            f"{safe_filename_component(amino_acid)}_{safe_filename_component(protein_name)}_site{site_id}.csv",
-        )
-        fieldnames = [
-            'Site ID',
-            'Site URL',
-            *downstream_columns,
-            *upstream_columns,
-            'Reference Number',
-            'PubMed ID',
-        ]
-        with open(output_filename, 'w', newline='', encoding='utf-8') as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in output_rows:
-                writer.writerow({
-                    key: 'nan' if value is None or value == '' else value
-                    for key, value in row.items()
-                })
-        print(f"Saved {output_filename}")
-        await close_browser_context(browser, context)
+            folder = safe_filename_component(protein_name)
+            os.makedirs(folder, exist_ok=True)
+            output_filename = os.path.join(
+                folder,
+                f"{safe_filename_component(amino_acid)}_{safe_filename_component(protein_name)}_site{site_id}.csv",
+            )
+            fieldnames = [
+                'Site ID',
+                'Site URL',
+                *downstream_columns,
+                *upstream_columns,
+                'Reference Number',
+                'PubMed ID',
+            ]
+            with open(output_filename, 'w', newline='', encoding='utf-8') as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in output_rows:
+                    writer.writerow({
+                        key: 'nan' if value is None or value == '' else value
+                        for key, value in row.items()
+                    })
+            print(f"Saved {output_filename}")
+            return output_filename
+        finally:
+            await close_browser_context(browser, context)
 
 
 NON_HUMAN_ORGANISM_PATTERN = re.compile(
@@ -476,15 +614,43 @@ async def find_site_ids_for_protein(protein_id):
     return list(dict.fromkeys(site_ids))
 
 
-async def scrape_protein(protein_id, delay, continue_on_error, delay_jitter=DEFAULT_DELAY_JITTER):
+async def scrape_protein(
+    protein_id,
+    delay,
+    continue_on_error,
+    delay_jitter=DEFAULT_DELAY_JITTER,
+    scrape_state=None,
+    scrape_state_path=DEFAULT_SCRAPE_STATE_PATH,
+    force_rescrape=False,
+):
+    if scrape_state is None:
+        scrape_state = load_scrape_state(scrape_state_path)
+
     print(f"START: protein ID {protein_id}: discovering human siteAction IDs", flush=True)
-    site_ids = await find_site_ids_for_protein(protein_id)
+    try:
+        site_ids = await find_site_ids_for_protein(protein_id)
+        mark_protein_sites_discovered(scrape_state, protein_id, site_ids, scrape_state_path)
+    except Exception as exc:
+        mark_protein_stage_failed(scrape_state, protein_id, "site_discovery", exc, scrape_state_path)
+        raise
+
     if not site_ids:
-        raise RuntimeError(f"No siteAction IDs found for protein ID {protein_id}.")
+        exc = RuntimeError(f"No siteAction IDs found for protein ID {protein_id}.")
+        mark_protein_stage_failed(scrape_state, protein_id, "site_discovery", exc, scrape_state_path)
+        raise exc
 
     print(f"FOUND: protein ID {protein_id}: {len(site_ids)} unique human site(s)", flush=True)
     print(f"START: protein ID {protein_id}: scraping site IDs", flush=True)
-    site_result = await run_site_batch(site_ids, delay, continue_on_error, delay_jitter)
+    site_result = await run_site_batch(
+        site_ids,
+        delay,
+        continue_on_error,
+        delay_jitter,
+        protein_id=protein_id,
+        scrape_state=scrape_state,
+        scrape_state_path=scrape_state_path,
+        force_rescrape=force_rescrape,
+    )
     print(f"DONE: protein ID {protein_id}: completed site scrape batch", flush=True)
     return site_result
 
@@ -861,6 +1027,16 @@ def build_parser():
         help="Continue a batch if one ID fails.",
     )
     parser.add_argument(
+        "--scrape-state",
+        default=str(DEFAULT_SCRAPE_STATE_PATH),
+        help="JSON checkpoint for resolved-ID protein/site scraping.",
+    )
+    parser.add_argument(
+        "--force-rescrape",
+        action="store_true",
+        help="Ignore completed site IDs in the scrape checkpoint and scrape them again.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate and print input IDs without scraping.",
@@ -868,19 +1044,44 @@ def build_parser():
     return parser
 
 
-async def run_site_batch(site_ids, delay, continue_on_error, delay_jitter=DEFAULT_DELAY_JITTER):
+async def run_site_batch(
+    site_ids,
+    delay,
+    continue_on_error,
+    delay_jitter=DEFAULT_DELAY_JITTER,
+    protein_id=None,
+    scrape_state=None,
+    scrape_state_path=DEFAULT_SCRAPE_STATE_PATH,
+    force_rescrape=False,
+):
     if not site_ids:
         raise ValueError("No SITE_IDs were provided.")
 
     print(f"START: scraping {len(site_ids)} siteAction ID(s)", flush=True)
     failures = []
     for index, site_id in enumerate(site_ids, start=1):
+        if protein_id is not None and scrape_state is not None and not force_rescrape:
+            protein_record = get_protein_state(scrape_state, protein_id)
+            if int(site_id) in protein_record.get("completed_site_ids", []):
+                print(
+                    f"[{index}/{len(site_ids)}] SKIP siteAction ID {site_id}: "
+                    f"already completed for protein {protein_id}",
+                    flush=True,
+                )
+                continue
+
         print(f"[{index}/{len(site_ids)}] START siteAction ID {site_id}", flush=True)
+        if protein_id is not None and scrape_state is not None:
+            mark_site_started(scrape_state, protein_id, site_id, scrape_state_path)
         try:
-            await main(site_id)
+            output_path = await main(site_id)
+            if protein_id is not None and scrape_state is not None:
+                mark_site_completed(scrape_state, protein_id, site_id, output_path, scrape_state_path)
             print(f"[{index}/{len(site_ids)}] DONE siteAction ID {site_id}", flush=True)
         except Exception as exc:
             failures.append((site_id, exc))
+            if protein_id is not None and scrape_state is not None:
+                mark_site_failed(scrape_state, protein_id, site_id, exc, scrape_state_path)
             print(f"ERROR: SITE_ID {site_id} failed: {exc}", flush=True)
             if not continue_on_error:
                 break
@@ -901,22 +1102,42 @@ async def run_site_batch(site_ids, delay, continue_on_error, delay_jitter=DEFAUL
     return {"failed_site_ids": [], "status": "complete"}
 
 
-async def run_protein_batch(protein_ids, delay, continue_on_error, delay_jitter=DEFAULT_DELAY_JITTER):
+async def run_protein_batch(
+    protein_ids,
+    delay,
+    continue_on_error,
+    delay_jitter=DEFAULT_DELAY_JITTER,
+    scrape_state_path=DEFAULT_SCRAPE_STATE_PATH,
+    force_rescrape=False,
+):
     if not protein_ids:
         raise ValueError("No protein IDs were provided.")
 
+    scrape_state = load_scrape_state(scrape_state_path)
+    print(f"CHECKPOINT: using scrape state {Path(scrape_state_path).resolve()}", flush=True)
     failures = []
     site_failures_by_protein = {}
     for index, protein_id in enumerate(protein_ids, start=1):
         print(f"[{index}/{len(protein_ids)}] START protein ID {protein_id}", flush=True)
         try:
-            site_result = await scrape_protein(protein_id, delay, continue_on_error, delay_jitter)
+            site_result = await scrape_protein(
+                protein_id,
+                delay,
+                continue_on_error,
+                delay_jitter,
+                scrape_state=scrape_state,
+                scrape_state_path=scrape_state_path,
+                force_rescrape=force_rescrape,
+            )
             failed_site_ids = site_result.get("failed_site_ids", []) if site_result else []
             if failed_site_ids:
                 site_failures_by_protein[str(protein_id)] = failed_site_ids
             print(f"[{index}/{len(protein_ids)}] DONE protein ID {protein_id}", flush=True)
         except Exception as exc:
             failures.append((protein_id, exc))
+            protein_record = get_protein_state(scrape_state, protein_id)
+            if not protein_record.get("last_error") and not protein_record.get("site_errors"):
+                mark_protein_stage_failed(scrape_state, protein_id, "protein_scrape", exc, scrape_state_path)
             print(f"ERROR: Protein ID {protein_id} failed: {exc}", flush=True)
             if not continue_on_error:
                 break
@@ -1018,6 +1239,15 @@ if __name__ == "__main__":
             exit(0)
 
     if protein_ids:
-        asyncio.run(run_protein_batch(protein_ids, args.delay, args.continue_on_error, args.delay_jitter))
+        asyncio.run(
+            run_protein_batch(
+                protein_ids,
+                args.delay,
+                args.continue_on_error,
+                args.delay_jitter,
+                args.scrape_state,
+                args.force_rescrape,
+            )
+        )
     if site_ids:
         asyncio.run(run_site_batch(site_ids, args.delay, args.continue_on_error, args.delay_jitter))

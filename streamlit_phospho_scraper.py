@@ -20,6 +20,7 @@ CURATION_DIR = ROOT / "curated_protein_ids"
 LOOKUP_CSV = CURATION_DIR / "resolved_protein_ids.csv"
 IDS_TXT = CURATION_DIR / "protein_ids.txt"
 AGENTIC_STATE_JSON = CURATION_DIR / "lookup_state.json"
+SCRAPE_STATE_JSON = CURATION_DIR / "scrape_state.json"
 
 CURATION_DIR.mkdir(exist_ok=True)
 
@@ -318,6 +319,8 @@ with run_tab:
                     str(delay),
                     "--delay-jitter",
                     str(delay_jitter),
+                    "--scrape-state",
+                    str(SCRAPE_STATE_JSON),
                 ]
                 if continue_on_error:
                     args.append("--continue-on-error")
@@ -463,6 +466,7 @@ with run_tab:
                     f"Input: {len(ids)} resolved protein ID(s)",
                     f"ID file: {IDS_TXT}",
                     f"Saved ID CSV: {LOOKUP_CSV}",
+                    f"Scrape checkpoint JSON: {SCRAPE_STATE_JSON}",
                     f"Missing proteins skipped: {len(missing_proteins) if requested_proteins else 0}",
                     f"Delay between IDs/sites: {delay}s +/- {delay_jitter:.0%}",
                     "Workflow: open protein page -> collect human siteAction links -> scrape each site -> write CSVs",
