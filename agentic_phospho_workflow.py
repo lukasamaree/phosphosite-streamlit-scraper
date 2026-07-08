@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import csv
 import json
+import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ class AgenticLookupConfig:
     delay: float = 5.0
     backoff: float = 2.0
     cloudflare_cooldown: float = 60.0
+    delay_jitter: float = 0.5
     organism: str = "human"
 
 
@@ -74,6 +76,27 @@ def is_cloudflare_error(error):
     return "cloudflare challenge" in str(error).lower()
 
 
+def jittered_wait_seconds(base_wait, jitter):
+    if base_wait <= 0:
+        return 0
+    jitter = max(0.0, jitter)
+    lower = max(0.0, base_wait * (1 - jitter))
+    upper = base_wait * (1 + jitter)
+    return random.uniform(lower, upper)
+
+
+async def sleep_with_jitter(base_wait, jitter, label):
+    wait_seconds = jittered_wait_seconds(base_wait, jitter)
+    if wait_seconds <= 0:
+        return
+    print(
+        f"WAIT: {label} after {wait_seconds:.1f}s "
+        f"(base={base_wait:.1f}s, jitter={jitter:.2f})",
+        flush=True,
+    )
+    await asyncio.sleep(wait_seconds)
+
+
 async def run_agentic_lookup(protein_names, output_csv, state_json, config):
     from playwright.async_api import async_playwright
 
@@ -82,7 +105,8 @@ async def run_agentic_lookup(protein_names, output_csv, state_json, config):
     print(f"START: agentic human protein ID lookup for {len(protein_names)} protein(s)", flush=True)
     print(
         f"CONFIG: attempts={config.attempts}, delay={config.delay}s, "
-        f"backoff={config.backoff}x, cloudflare_cooldown={config.cloudflare_cooldown}s",
+        f"backoff={config.backoff}x, cloudflare_cooldown={config.cloudflare_cooldown}s, "
+        f"delay_jitter={config.delay_jitter}",
         flush=True,
     )
     print(f"STATE: loading checkpoint from {state_path}", flush=True)
@@ -148,21 +172,23 @@ async def run_agentic_lookup(protein_names, output_csv, state_json, config):
                             wait_seconds = config.delay * (config.backoff ** (attempt - 1))
                             if error_type == "cloudflare":
                                 wait_seconds = max(wait_seconds, config.cloudflare_cooldown)
-                            print(f"WAIT: {protein_name} retrying after {wait_seconds:.1f}s", flush=True)
-                            await asyncio.sleep(wait_seconds)
+                            await sleep_with_jitter(
+                                wait_seconds,
+                                config.delay_jitter,
+                                f"{protein_name} retrying",
+                            )
 
                 if runs[protein_name].get("status") != "resolved":
                     print(f"FAILED: {protein_name}: {last_error}", flush=True)
                     if runs[protein_name].get("error_type") == "cloudflare" and config.cloudflare_cooldown > 0:
-                        print(
-                            f"WAIT: Cloudflare cooldown {config.cloudflare_cooldown:.1f}s before next protein",
-                            flush=True,
+                        await sleep_with_jitter(
+                            config.cloudflare_cooldown,
+                            config.delay_jitter,
+                            "Cloudflare cooldown before next protein",
                         )
-                        await asyncio.sleep(config.cloudflare_cooldown)
 
-                if index < len(protein_names) and config.delay > 0:
-                    print(f"WAIT: sleeping {config.delay:.1f}s before next protein", flush=True)
-                    await asyncio.sleep(config.delay)
+                if index < len(protein_names):
+                    await sleep_with_jitter(config.delay, config.delay_jitter, "before next protein")
         finally:
             print("SESSION: closing shared browser context", flush=True)
             await close_browser_context(browser, context)
@@ -182,6 +208,7 @@ def build_parser():
     parser.add_argument("--state-json", default=str(CURATION_DIR / "lookup_state.json"))
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--delay", type=float, default=5.0)
+    parser.add_argument("--delay-jitter", type=float, default=0.5)
     parser.add_argument("--backoff", type=float, default=2.0)
     parser.add_argument("--cloudflare-cooldown", type=float, default=60.0)
     return parser
@@ -207,5 +234,6 @@ if __name__ == "__main__":
         delay=args.delay,
         backoff=args.backoff,
         cloudflare_cooldown=args.cloudflare_cooldown,
+        delay_jitter=args.delay_jitter,
     )
     asyncio.run(run_agentic_lookup(protein_names, args.output_csv, args.state_json, config))

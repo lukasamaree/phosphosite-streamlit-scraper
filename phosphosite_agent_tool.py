@@ -177,6 +177,7 @@ async def resolve_ids(args):
             delay=args.delay,
             backoff=args.backoff,
             cloudflare_cooldown=args.cloudflare_cooldown,
+            delay_jitter=args.delay_jitter,
             organism="human",
         )
         await run_agentic_lookup(names_to_resolve, args.lookup_csv, args.state_json, config)
@@ -199,6 +200,7 @@ async def scrape_ids(args):
                 delay=args.delay,
                 backoff=args.backoff,
                 cloudflare_cooldown=args.cloudflare_cooldown,
+                delay_jitter=args.delay_jitter,
                 organism="human",
             )
             await run_agentic_lookup(missing_names, args.lookup_csv, args.state_json, config)
@@ -218,7 +220,7 @@ async def scrape_ids(args):
 
     ids_file = write_ids_file(ids, args.ids_file)
     print(f"TOOL: scraping {len(ids)} protein ID(s) from {ids_file}", flush=True)
-    scrape_result = await run_protein_batch(ids, args.delay, args.continue_on_error)
+    scrape_result = await run_protein_batch(ids, args.delay, args.continue_on_error, args.delay_jitter)
 
     summary = {
         "protein_ids": ids,
@@ -250,6 +252,7 @@ def add_shared_lookup_args(parser):
     parser.add_argument("--state-json", default=str(DEFAULT_STATE_JSON), help="Resolved ID JSON checkpoint.")
     parser.add_argument("--attempts", type=int, default=3, help="Lookup attempts per missing protein.")
     parser.add_argument("--delay", type=float, default=5.0, help="Seconds between requests.")
+    parser.add_argument("--delay-jitter", type=float, default=0.5, help="Randomize scraper waits by this fraction around --delay.")
     parser.add_argument("--backoff", type=float, default=2.0, help="Retry backoff multiplier.")
     parser.add_argument("--cloudflare-cooldown", type=float, default=60.0, help="Seconds to wait after Cloudflare challenges.")
 

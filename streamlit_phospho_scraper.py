@@ -255,6 +255,7 @@ if "protein_text" not in st.session_state:
 with st.sidebar:
     st.subheader("Workflow")
     delay = st.number_input("Delay between requests", min_value=0.0, max_value=30.0, value=5.0, step=0.5)
+    delay_jitter = st.slider("Delay jitter", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
     attempts = st.number_input("Agent retry attempts", min_value=1, max_value=10, value=3, step=1)
     cloudflare_cooldown = st.number_input(
         "Cloudflare cooldown",
@@ -315,6 +316,8 @@ with run_tab:
                     str(LOOKUP_CSV),
                     "--delay",
                     str(delay),
+                    "--delay-jitter",
+                    str(delay_jitter),
                 ]
                 if continue_on_error:
                     args.append("--continue-on-error")
@@ -322,7 +325,7 @@ with run_tab:
                 summary_lines = [
                     f"Input: {len(proteins)} protein symbol(s)",
                     f"Output CSV: {LOOKUP_CSV}",
-                    f"Delay between proteins: {delay}s",
+                    f"Delay between proteins: {delay}s +/- {delay_jitter:.0%}",
                     "Workflow: search name -> choose human result -> read id= from final URL",
                 ]
                 with st.spinner("Searching names, opening human protein pages, and reading final URL IDs..."):
@@ -357,6 +360,8 @@ with run_tab:
                     str(attempts),
                     "--delay",
                     str(delay),
+                    "--delay-jitter",
+                    str(delay_jitter),
                     "--cloudflare-cooldown",
                     str(cloudflare_cooldown),
                 ]
@@ -364,7 +369,7 @@ with run_tab:
                 summary_lines = [
                     f"Input: {len(proteins)} protein symbol(s)",
                     f"Attempts per protein: {attempts}",
-                    f"Delay/backoff base: {delay}s",
+                    f"Delay/backoff base: {delay}s +/- {delay_jitter:.0%}",
                     f"Cloudflare cooldown: {cloudflare_cooldown}s",
                     f"Checkpoint JSON: {AGENTIC_STATE_JSON}",
                     f"Partial CSV: {LOOKUP_CSV}",
@@ -405,6 +410,8 @@ with run_tab:
                     str(attempts),
                     "--delay",
                     str(delay),
+                    "--delay-jitter",
+                    str(delay_jitter),
                     "--cloudflare-cooldown",
                     str(cloudflare_cooldown),
                 ]
@@ -412,6 +419,7 @@ with run_tab:
                     f"Saved IDs available: {len(usable_lookup_df)}",
                     f"Missing IDs to resolve now: {len(missing_proteins)}",
                     f"Missing proteins: {', '.join(missing_proteins)}",
+                    f"Delay/backoff base: {delay}s +/- {delay_jitter:.0%}",
                     f"Cloudflare cooldown: {cloudflare_cooldown}s",
                     f"Checkpoint JSON: {AGENTIC_STATE_JSON}",
                     "Workflow: use saved IDs first, resolve only missing proteins, then scrape",
@@ -440,7 +448,14 @@ with run_tab:
             else:
                 ids = lookup_df["protein_id"].dropna().astype(int).tolist()
                 write_ids_file(ids)
-                args = ["--protein-ids-file", str(IDS_TXT), "--delay", str(delay)]
+                args = [
+                    "--protein-ids-file",
+                    str(IDS_TXT),
+                    "--delay",
+                    str(delay),
+                    "--delay-jitter",
+                    str(delay_jitter),
+                ]
                 if continue_on_error:
                     args.append("--continue-on-error")
 
@@ -449,7 +464,7 @@ with run_tab:
                     f"ID file: {IDS_TXT}",
                     f"Saved ID CSV: {LOOKUP_CSV}",
                     f"Missing proteins skipped: {len(missing_proteins) if requested_proteins else 0}",
-                    f"Delay between IDs/sites: {delay}s",
+                    f"Delay between IDs/sites: {delay}s +/- {delay_jitter:.0%}",
                     "Workflow: open protein page -> collect human siteAction links -> scrape each site -> write CSVs",
                 ]
                 with st.spinner(f"Scraping {len(ids)} protein ID(s)..."):

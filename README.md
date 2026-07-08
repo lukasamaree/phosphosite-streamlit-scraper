@@ -9,7 +9,7 @@ Streamlit dashboard and reusable command-line tools for resolving human PhosphoS
 - Reads the protein ID from the final `proteinAction.action?id=...` URL.
 - Saves curated protein IDs in `curated_protein_ids/`.
 - Reuses saved IDs so known proteins do not need to be looked up again.
-- Scrapes resolved protein IDs with conservative delays and live logs.
+- Scrapes resolved protein IDs with conservative randomized delays and live logs.
 
 ## Streamlit App
 
@@ -75,6 +75,30 @@ Scrape known IDs directly:
 
 The tool prints a final `SUMMARY_JSON: ...` line for agents to parse. When `--eval-manifest` is supplied, that summary includes post-scrape `evaluation` with `failure_class`, `failure_signals`, `recommended_action`, `usable_scrape_rate`, `cloudflare_likely_rate`, and `wrong_protein_rate`.
 
+## Cloudflare-Safe Run Pattern
+
+The scraper does not bypass Cloudflare. It is designed to reduce repeated failed traffic and preserve useful progress:
+
+- Detect challenge pages.
+- Stop aggressive retries.
+- Save lookup state and partial resolved IDs after each attempt.
+- Reuse cached protein IDs and completed outputs.
+- Back off with randomized jitter.
+- Resume later from the next missing protein.
+
+Use `--delay` as the base wait and `--delay-jitter` to randomize waits around that value:
+
+```bash
+.venv312/bin/python phosphosite_agent_tool.py run \
+  --protein-names-file protein_names.txt \
+  --delay 20 \
+  --delay-jitter 0.5 \
+  --cloudflare-cooldown 180 \
+  --continue-on-error
+```
+
+With `--delay 20 --delay-jitter 0.5`, each between-request wait is randomly chosen from roughly 10 to 30 seconds. Cloudflare retry waits use randomized exponential backoff.
+
 ## Validation Tool
 
 Validate the curated ID cache and scraped CSV outputs:
@@ -117,7 +141,7 @@ python phospho_group_scraper.py --protein-id 465
 Run a protein-ID batch:
 
 ```bash
-python phospho_group_scraper.py --protein-ids-file protein_ids.txt --continue-on-error --delay 2
+python phospho_group_scraper.py --protein-ids-file protein_ids.txt --continue-on-error --delay 20 --delay-jitter 0.5
 ```
 
 Use `protein_names.example.txt` and `protein_ids.example.txt` as templates.

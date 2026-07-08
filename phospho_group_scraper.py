@@ -10,12 +10,35 @@ from urllib.parse import quote_plus
 
 DEFAULT_CLOUDFLARE_RETRIES = 3
 DEFAULT_CLOUDFLARE_WAIT_SECONDS = 10
+DEFAULT_DELAY_JITTER = 0.5
 ROOT = Path(__file__).resolve().parent
 BROWSER_STATE_PATH = ROOT / ".phosphosite_browser_state.json"
 
 
 def cloudflare_wait_seconds(base_wait, attempt):
-    return base_wait * attempt + random.uniform(1.0, 4.0)
+    exponential_wait = base_wait * (2 ** (attempt - 1))
+    return random.uniform(exponential_wait, exponential_wait * 1.75)
+
+
+def jittered_delay_seconds(base_delay, jitter=DEFAULT_DELAY_JITTER):
+    if base_delay <= 0:
+        return 0
+    jitter = max(0.0, jitter)
+    lower = max(0.0, base_delay * (1 - jitter))
+    upper = base_delay * (1 + jitter)
+    return random.uniform(lower, upper)
+
+
+async def sleep_between_requests(base_delay, jitter, label):
+    wait_for = jittered_delay_seconds(base_delay, jitter)
+    if wait_for <= 0:
+        return
+    print(
+        f"WAIT: sleeping {wait_for:.1f}s before next {label} "
+        f"(base={base_delay:.1f}s, jitter={jitter:.2f})",
+        flush=True,
+    )
+    await asyncio.sleep(wait_for)
 
 
 async def is_cloudflare_challenge_page(page):
@@ -453,7 +476,7 @@ async def find_site_ids_for_protein(protein_id):
     return list(dict.fromkeys(site_ids))
 
 
-async def scrape_protein(protein_id, delay, continue_on_error):
+async def scrape_protein(protein_id, delay, continue_on_error, delay_jitter=DEFAULT_DELAY_JITTER):
     print(f"START: protein ID {protein_id}: discovering human siteAction IDs", flush=True)
     site_ids = await find_site_ids_for_protein(protein_id)
     if not site_ids:
@@ -461,7 +484,7 @@ async def scrape_protein(protein_id, delay, continue_on_error):
 
     print(f"FOUND: protein ID {protein_id}: {len(site_ids)} unique human site(s)", flush=True)
     print(f"START: protein ID {protein_id}: scraping site IDs", flush=True)
-    site_result = await run_site_batch(site_ids, delay, continue_on_error)
+    site_result = await run_site_batch(site_ids, delay, continue_on_error, delay_jitter)
     print(f"DONE: protein ID {protein_id}: completed site scrape batch", flush=True)
     return site_result
 
@@ -675,7 +698,7 @@ async def resolve_protein_name(protein_name, organism):
             await close_browser_context(browser, context)
 
 
-async def resolve_protein_names(protein_names, organism, delay, continue_on_error=False):
+async def resolve_protein_names(protein_names, organism, delay, continue_on_error=False, delay_jitter=DEFAULT_DELAY_JITTER):
     from playwright.async_api import async_playwright
 
     resolved = []
@@ -701,9 +724,8 @@ async def resolve_protein_names(protein_names, organism, delay, continue_on_erro
                     if not continue_on_error:
                         raise
 
-                if index < len(protein_names) and delay > 0:
-                    print(f"WAIT: sleeping {delay:.1f}s before next protein lookup", flush=True)
-                    await asyncio.sleep(delay)
+                if index < len(protein_names):
+                    await sleep_between_requests(delay, delay_jitter, "protein lookup")
         finally:
             print("SESSION: closing lookup browser context", flush=True)
             await close_browser_context(browser, context)
@@ -828,6 +850,12 @@ def build_parser():
         help="Seconds to wait between IDs in batch mode. Default: 2.0.",
     )
     parser.add_argument(
+        "--delay-jitter",
+        type=float,
+        default=DEFAULT_DELAY_JITTER,
+        help="Randomize waits by this fraction around --delay. Example: 0.5 gives 50%%-150%% of delay.",
+    )
+    parser.add_argument(
         "--continue-on-error",
         action="store_true",
         help="Continue a batch if one ID fails.",
@@ -840,7 +868,7 @@ def build_parser():
     return parser
 
 
-async def run_site_batch(site_ids, delay, continue_on_error):
+async def run_site_batch(site_ids, delay, continue_on_error, delay_jitter=DEFAULT_DELAY_JITTER):
     if not site_ids:
         raise ValueError("No SITE_IDs were provided.")
 
@@ -857,9 +885,8 @@ async def run_site_batch(site_ids, delay, continue_on_error):
             if not continue_on_error:
                 break
 
-        if index < len(site_ids) and delay > 0:
-            print(f"WAIT: sleeping {delay:.1f}s before next siteAction scrape", flush=True)
-            await asyncio.sleep(delay)
+        if index < len(site_ids):
+            await sleep_between_requests(delay, delay_jitter, "siteAction scrape")
 
     if failures:
         failed_ids = ", ".join(str(site_id) for site_id, _ in failures)
@@ -874,7 +901,7 @@ async def run_site_batch(site_ids, delay, continue_on_error):
     return {"failed_site_ids": [], "status": "complete"}
 
 
-async def run_protein_batch(protein_ids, delay, continue_on_error):
+async def run_protein_batch(protein_ids, delay, continue_on_error, delay_jitter=DEFAULT_DELAY_JITTER):
     if not protein_ids:
         raise ValueError("No protein IDs were provided.")
 
@@ -883,7 +910,7 @@ async def run_protein_batch(protein_ids, delay, continue_on_error):
     for index, protein_id in enumerate(protein_ids, start=1):
         print(f"[{index}/{len(protein_ids)}] START protein ID {protein_id}", flush=True)
         try:
-            site_result = await scrape_protein(protein_id, delay, continue_on_error)
+            site_result = await scrape_protein(protein_id, delay, continue_on_error, delay_jitter)
             failed_site_ids = site_result.get("failed_site_ids", []) if site_result else []
             if failed_site_ids:
                 site_failures_by_protein[str(protein_id)] = failed_site_ids
@@ -894,9 +921,8 @@ async def run_protein_batch(protein_ids, delay, continue_on_error):
             if not continue_on_error:
                 break
 
-        if index < len(protein_ids) and delay > 0:
-            print(f"WAIT: sleeping {delay:.1f}s before next protein ID", flush=True)
-            await asyncio.sleep(delay)
+        if index < len(protein_ids):
+            await sleep_between_requests(delay, delay_jitter, "protein ID")
 
     if failures:
         failed_ids = ", ".join(str(protein_id) for protein_id, _ in failures)
@@ -981,6 +1007,7 @@ if __name__ == "__main__":
                 args.organism,
                 args.delay,
                 args.continue_on_error,
+                args.delay_jitter,
             )
         )
         if args.lookup_output:
@@ -991,6 +1018,6 @@ if __name__ == "__main__":
             exit(0)
 
     if protein_ids:
-        asyncio.run(run_protein_batch(protein_ids, args.delay, args.continue_on_error))
+        asyncio.run(run_protein_batch(protein_ids, args.delay, args.continue_on_error, args.delay_jitter))
     if site_ids:
-        asyncio.run(run_site_batch(site_ids, args.delay, args.continue_on_error))
+        asyncio.run(run_site_batch(site_ids, args.delay, args.continue_on_error, args.delay_jitter))
