@@ -31,4 +31,5 @@ site_ids.txt
 !curated_protein_ids/lookup_state.json
 !curated_protein_ids/protein_ids.txt
 curated_protein_ids/scrape_state.json
+curated_protein_ids/protein_identity_lookup_cache*.json
 !scraper_eval/tests/fixtures/**/*.csv

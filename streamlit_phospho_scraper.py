@@ -16,8 +16,10 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 SCRAPER = ROOT / "phospho_group_scraper.py"
 AGENTIC_WORKFLOW = ROOT / "agentic_phospho_workflow.py"
+IDENTITY_MAPPER = ROOT / "protein_identity_mapper.py"
 CURATION_DIR = ROOT / "curated_protein_ids"
 LOOKUP_CSV = CURATION_DIR / "resolved_protein_ids.csv"
+IDENTITY_LOOKUP_CSV = CURATION_DIR / "protein_identity_lookup.csv"
 IDS_TXT = CURATION_DIR / "protein_ids.txt"
 AGENTIC_STATE_JSON = CURATION_DIR / "lookup_state.json"
 SCRAPE_STATE_JSON = CURATION_DIR / "scrape_state.json"
@@ -279,7 +281,7 @@ effective_delay = max(delay, 20.0) if gentle_mode else delay
 effective_cloudflare_cooldown = max(cloudflare_cooldown, 1800.0) if gentle_mode else cloudflare_cooldown
 effective_max_sites_per_run = max_sites_per_run if gentle_mode else max_sites_per_run
 
-run_tab, lookup_tab, outputs_tab = st.tabs(["Run", "Resolved IDs", "Outputs"])
+run_tab, lookup_tab, identity_tab, outputs_tab = st.tabs(["Run", "Resolved IDs", "Identity Lookup", "Outputs"])
 
 with run_tab:
     left, right = st.columns([0.9, 1.1], gap="large")
@@ -518,6 +520,54 @@ with lookup_tab:
                 ids.append(int(value))
         write_ids_file(ids)
         st.success(f"Saved {len(ids)} ID(s) to {IDS_TXT.name}.")
+
+with identity_tab:
+    st.subheader("Protein Identity Lookup")
+    st.caption("Map raw PhosphoSite protein names to canonical human gene symbols and UniProt accessions.")
+
+    identity_names_text = st.text_area(
+        "Optional raw protein names",
+        height=120,
+        placeholder="Akt1\nMDM2\nTRAF6\nDRD2\nDRD3\nKPNB1",
+    )
+    col_a, col_b = st.columns(2)
+    build_from_outputs = col_a.button("Build From Output CSVs", use_container_width=True)
+    build_from_names = col_b.button("Build From Pasted Names", use_container_width=True)
+
+    if build_from_outputs or build_from_names:
+        args = [
+            "--output-csv",
+            str(IDENTITY_LOOKUP_CSV),
+            "--cache-json",
+            str(CURATION_DIR / "protein_identity_lookup_cache.json"),
+        ]
+        summary_lines = [
+            f"Output CSV: {IDENTITY_LOOKUP_CSV}",
+            "Sources: UniProt, HGNC, NCBI Gene, Ensembl",
+            "Columns scanned: Protein, Downstream protein, Upstream protein",
+        ]
+        if build_from_names:
+            names = unique_names(parse_protein_text(identity_names_text))
+            if not names:
+                st.error("Paste at least one raw protein name.")
+                args = None
+            else:
+                args.extend(["--names", *names])
+                summary_lines.insert(0, f"Input names: {len(names)}")
+        if args is not None:
+            with st.spinner("Building canonical gene/UniProt lookup table..."):
+                code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity lookup", summary_lines)
+            if code == 0:
+                st.success("Protein identity lookup table built.")
+            else:
+                st.warning("Protein identity lookup finished with errors. Check the log.")
+
+    if IDENTITY_LOOKUP_CSV.exists():
+        identity_df = pd.read_csv(IDENTITY_LOOKUP_CSV)
+        st.dataframe(identity_df, use_container_width=True, hide_index=True)
+        dataframe_download(identity_df, "protein_identity_lookup.csv", "Download Identity Lookup CSV")
+    else:
+        st.info("Build the identity lookup table from outputs or pasted raw names.")
 
 with outputs_tab:
     st.subheader("Scraped Outputs")

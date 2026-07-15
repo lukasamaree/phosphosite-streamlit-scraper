@@ -119,6 +119,26 @@ Validate the curated ID cache and scraped CSV outputs:
 
 The validator checks that curated IDs have expected columns/URLs, scraped CSVs are readable, output files have rows/columns, and PubMed IDs look numeric when present. It prints a final `VALIDATION_JSON: ...` line for agents to parse.
 
+## Protein Identity Lookup
+
+Build a lookup table that maps raw PhosphoSitePlus names from scraper outputs to canonical human gene symbols and UniProt accessions:
+
+```bash
+.venv312/bin/python protein_identity_mapper.py \
+  --output-root . \
+  --output-csv curated_protein_ids/protein_identity_lookup.csv
+```
+
+Or resolve pasted names directly:
+
+```bash
+.venv312/bin/python protein_identity_mapper.py \
+  --names Akt1 MDM2 TRAF6 DRD2 DRD3 KPNB1 \
+  --output-csv curated_protein_ids/protein_identity_lookup.csv
+```
+
+The mapper scans `Protein`, `Downstream protein`, and `Upstream protein` columns and queries UniProt, HGNC, NCBI Gene, and Ensembl. It keeps both the raw scraped name and normalized identity fields such as `canonical_gene`, `uniprot_accession`, `recommended_name`, `aliases`, `confidence`, and `sources`.
+
 ## Identity-First Scraper Evaluation
 
 Use `scraper_eval/` when you want to score actual scraper outputs against an expected manifest.
