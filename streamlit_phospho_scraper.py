@@ -319,7 +319,7 @@ effective_delay = max(delay, 20.0) if gentle_mode else delay
 effective_cloudflare_cooldown = max(cloudflare_cooldown, 1800.0) if gentle_mode else cloudflare_cooldown
 effective_max_sites_per_run = max_sites_per_run if gentle_mode else max_sites_per_run
 
-run_tab, lookup_tab, identity_tab, outputs_tab = st.tabs(["Run", "Resolved IDs", "Identity Lookup", "Outputs"])
+run_tab, lookup_tab, outputs_tab = st.tabs(["Run", "Resolved IDs", "Outputs"])
 
 with run_tab:
     left, right = st.columns([0.9, 1.1], gap="large")
@@ -559,63 +559,55 @@ with lookup_tab:
         write_ids_file(ids)
         st.success(f"Saved {len(ids)} ID(s) to {IDS_TXT.name}.")
 
-with identity_tab:
-    st.subheader("Protein Identity Lookup")
-    st.caption(
-        "Map every unique raw PhosphoSite protein name in scraper outputs to canonical human gene symbols "
-        "and UniProt accessions."
-    )
-
-    identity_names_text = st.text_area(
-        "Optional raw protein names for a targeted lookup",
-        height=120,
-        placeholder="Akt1\nMDM2\nTRAF6\nDRD2\nDRD3\nKPNB1",
-    )
+with outputs_tab:
+    st.subheader("Scraped Outputs")
     detected_names = identity_names_from_outputs()
-    st.caption(f"{len(detected_names)} unique raw protein name(s) found across all output CSVs.")
-    if detected_names:
-        with st.expander("Preview detected output names"):
-            st.dataframe(pd.DataFrame({"raw_name": detected_names}), use_container_width=True, hide_index=True)
+    identity_lookup_exists = IDENTITY_LOOKUP_CSV.exists()
 
-    col_a, col_b = st.columns(2)
-    build_from_outputs = col_a.button("Build For All Output Names", use_container_width=True)
-    build_from_names = col_b.button("Build Only Pasted Names", use_container_width=True)
-    enrich_outputs_clicked = st.button("Enrich Output CSVs With Gene/UniProt Columns", use_container_width=True)
+    output_action_cols = st.columns([1, 1, 1])
+    build_identity_clicked = output_action_cols[0].button(
+        "Build Gene/UniProt Map",
+        use_container_width=True,
+        help="Scan all output CSVs and resolve raw PhosphoSite protein names to canonical gene symbols and UniProt accessions.",
+    )
+    enrich_outputs_clicked = output_action_cols[1].button(
+        "Write Enriched CSV Copies",
+        use_container_width=True,
+        help="Create enriched copies of all output CSVs with canonical gene and UniProt columns.",
+    )
+    output_action_cols[2].metric("Mapped names", len(pd.read_csv(IDENTITY_LOOKUP_CSV)) if identity_lookup_exists else 0)
 
-    if build_from_outputs or build_from_names:
+    st.caption(
+        f"Identity enrichment scans {len(detected_names)} unique raw name(s) from Protein, "
+        "Downstream protein, and Upstream protein columns. Selected CSV downloads include "
+        "gene/UniProt columns whenever the map exists."
+    )
+
+    if build_identity_clicked:
         args = [
+            "--all-from-outputs",
             "--output-csv",
             str(IDENTITY_LOOKUP_CSV),
             "--cache-json",
             str(CURATION_DIR / "protein_identity_lookup_cache.json"),
         ]
         summary_lines = [
+            f"All-output mode: {len(detected_names)} unique raw name(s) detected",
             f"Output CSV: {IDENTITY_LOOKUP_CSV}",
             "Sources: UniProt, HGNC, NCBI Gene, Ensembl",
             "Columns scanned across all CSVs: Protein, Downstream protein, Upstream protein",
         ]
-        if build_from_outputs:
-            args.append("--all-from-outputs")
-            summary_lines.insert(0, f"All-output mode: {len(detected_names)} unique raw name(s) detected")
-        if build_from_names:
-            names = unique_names(parse_protein_text(identity_names_text))
-            if not names:
-                st.error("Paste at least one raw protein name.")
-                args = None
-            else:
-                args.extend(["--names", *names])
-                summary_lines.insert(0, f"Input names: {len(names)}")
-        if args is not None:
-            with st.spinner("Building canonical gene/UniProt lookup table..."):
-                code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity lookup", summary_lines)
-            if code == 0:
-                st.success("Protein identity lookup table built.")
-            else:
-                st.warning("Protein identity lookup finished with errors. Check the log.")
+        with st.spinner("Building canonical gene/UniProt map from output CSVs..."):
+            code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity lookup", summary_lines)
+        if code == 0:
+            read_identity_lookup.clear()
+            st.success("Gene/UniProt map built. Downloads from this tab will include identity columns.")
+        else:
+            st.warning("Gene/UniProt map finished with errors. Check the log.")
 
     if enrich_outputs_clicked:
         if not IDENTITY_LOOKUP_CSV.exists():
-            st.error("Build the protein identity lookup table before enriching outputs.")
+            st.error("Build the Gene/UniProt map before writing enriched CSV copies.")
         else:
             args = [
                 "--enrich-outputs",
@@ -634,31 +626,20 @@ with identity_tab:
             with st.spinner("Writing enriched output CSV copies..."):
                 code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity enrichment", summary_lines)
             if code == 0:
-                st.success("Enriched output CSVs written.")
+                st.success("Enriched output CSV copies written.")
             else:
                 st.warning("Output enrichment finished with errors. Check the log.")
 
-    if IDENTITY_LOOKUP_CSV.exists():
-        identity_df = pd.read_csv(IDENTITY_LOOKUP_CSV)
-        st.dataframe(identity_df, use_container_width=True, hide_index=True)
-        dataframe_download(identity_df, "protein_identity_lookup.csv", "Download Identity Lookup CSV")
-    else:
-        st.info("Build the identity lookup table from outputs or pasted raw names.")
-
     enriched_files = files_under(IDENTITY_ENRICHED_ROOT)
     if enriched_files:
-        st.divider()
-        st.subheader("Enriched Output CSVs")
-        st.caption(f"{len(enriched_files)} enriched file(s) written under {IDENTITY_ENRICHED_ROOT.name}.")
         st.download_button(
             "Download Enriched Output ZIP",
             zip_files(enriched_files),
             file_name="phosphosite_identity_enriched_outputs.zip",
             mime="application/zip",
+            use_container_width=True,
         )
 
-with outputs_tab:
-    st.subheader("Scraped Outputs")
     if st.button("Scan Output Folders", use_container_width=True):
         st.session_state.outputs_scanned = True
 
