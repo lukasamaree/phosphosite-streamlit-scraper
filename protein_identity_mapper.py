@@ -17,6 +17,7 @@ DEFAULT_CACHE = CURATION_DIR / "protein_identity_lookup_cache.json"
 DEFAULT_COLUMNS = ("Protein", "Downstream protein", "Upstream protein")
 DEFAULT_ENRICHED_ROOT = ROOT / "identity_enriched_outputs"
 HUMAN_ORGANISM_ID = "9606"
+IGNORED_OUTPUT_DIRS = {"curated_protein_ids", "identity_enriched_outputs"}
 NON_PROTEIN_PHRASES = (
     "effect of",
     "effects of",
@@ -54,6 +55,15 @@ def is_probable_protein_token(value):
     if len(text.split()) > 3:
         return False
     return bool(re.search(r"[A-Za-z0-9]", text))
+
+
+def is_identity_column(column):
+    return (
+        str(column).endswith("_canonical_gene")
+        or str(column).endswith("_uniprot_accession")
+        or str(column).endswith("_identity_confidence")
+        or str(column).endswith("_identity_sources")
+    )
 
 
 def name_key(value):
@@ -325,7 +335,7 @@ def collect_names_from_outputs(root, columns=DEFAULT_COLUMNS):
     names = []
     columns_lower = {column.lower(): column for column in columns}
     for path in Path(root).rglob("*.csv"):
-        if any(part.startswith(".") or part == "__pycache__" for part in path.parts):
+        if any(part.startswith(".") or part == "__pycache__" or part in IGNORED_OUTPUT_DIRS for part in path.parts):
             continue
         try:
             with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
@@ -414,7 +424,12 @@ def enrich_output_csv(input_path, output_path, lookup, columns=DEFAULT_COLUMNS):
     with open(input_path, "r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
         rows = list(reader)
-        fieldnames = list(reader.fieldnames or [])
+        fieldnames = [field for field in list(reader.fieldnames or []) if not is_identity_column(field)]
+
+    for row in rows:
+        for field in list(row):
+            if is_identity_column(field):
+                row.pop(field, None)
 
     available_columns = [column for column in columns if column in fieldnames]
     added_fields = []
@@ -448,7 +463,7 @@ def enrich_outputs(output_root, lookup_csv, enriched_root=DEFAULT_ENRICHED_ROOT,
     lookup = load_lookup_table(lookup_csv)
     summaries = []
     for input_path in output_root.rglob("*.csv"):
-        if any(part.startswith(".") or part == "__pycache__" for part in input_path.parts):
+        if any(part.startswith(".") or part == "__pycache__" or part in IGNORED_OUTPUT_DIRS for part in input_path.parts):
             continue
         if input_path.resolve() == Path(lookup_csv).resolve():
             continue

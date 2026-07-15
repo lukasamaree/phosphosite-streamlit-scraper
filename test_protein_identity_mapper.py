@@ -176,6 +176,71 @@ class ProteinIdentityMapperTests(unittest.TestCase):
         self.assertEqual(row["upstream_protein_canonical_gene"], "")
         self.assertEqual(row["upstream_protein_uniprot_accession"], "")
 
+    def test_enrich_outputs_strips_stale_identity_columns_before_recomputing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "Akt1"
+            output_dir.mkdir()
+            input_csv = output_dir / "site.csv"
+            lookup_csv = root / "protein_identity_lookup.csv"
+            enriched_root = root / "enriched"
+
+            with open(input_csv, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "Protein",
+                        "Downstream protein",
+                        "Upstream protein",
+                        "downstream_protein_canonical_gene",
+                        "downstream_protein_uniprot_accession",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "Protein": "Akt1",
+                        "Downstream protein": "",
+                        "Upstream protein": "",
+                        "downstream_protein_canonical_gene": "SCN11A",
+                        "downstream_protein_uniprot_accession": "Q9UKU5",
+                    }
+                )
+
+            with open(lookup_csv, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "raw_name",
+                        "normalized_query",
+                        "canonical_gene",
+                        "uniprot_accession",
+                        "recommended_name",
+                        "organism",
+                        "aliases",
+                        "confidence",
+                        "match_status",
+                        "sources",
+                        "hgnc_id",
+                        "ncbi_gene_id",
+                        "ensembl_gene_id",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow({"raw_name": "Akt1", "canonical_gene": "AKT1", "uniprot_accession": "P31749", "confidence": "high", "sources": "UniProt", "aliases": "Akt1"})
+                writer.writerow({"raw_name": "SCN11A", "canonical_gene": "SCN11A", "uniprot_accession": "Q9UKU5", "confidence": "high", "sources": "UniProt", "aliases": "SCN11A"})
+
+            enrich_outputs(root, lookup_csv, enriched_root)
+            enriched_csv = enriched_root / "Akt1" / "site.csv"
+            with open(enriched_csv, "r", encoding="utf-8", newline="") as handle:
+                row = next(csv.DictReader(handle))
+
+        self.assertEqual(row["protein_canonical_gene"], "AKT1")
+        self.assertEqual(row["downstream_protein_canonical_gene"], "")
+        self.assertEqual(row["downstream_protein_uniprot_accession"], "")
+        self.assertEqual(row["upstream_protein_canonical_gene"], "")
+        self.assertEqual(row["upstream_protein_uniprot_accession"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

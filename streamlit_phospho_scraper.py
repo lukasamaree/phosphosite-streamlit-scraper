@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import shlex
 import subprocess
 import sys
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from protein_identity_mapper import DEFAULT_COLUMNS, add_identity_columns, load_lookup_table
+from protein_identity_mapper import DEFAULT_COLUMNS, add_identity_columns, is_identity_column, load_lookup_table
 
 
 ROOT = Path(__file__).resolve().parent
@@ -268,14 +269,7 @@ def read_identity_lookup(path):
 
 
 def enrich_dataframe_with_identity(df, lookup):
-    identity_columns = [
-        column
-        for column in df.columns
-        if column.endswith("_canonical_gene")
-        or column.endswith("_uniprot_accession")
-        or column.endswith("_identity_confidence")
-        or column.endswith("_identity_sources")
-    ]
+    identity_columns = [column for column in df.columns if is_identity_column(column)]
     if identity_columns:
         df = df.drop(columns=identity_columns)
     if not lookup:
@@ -600,6 +594,8 @@ with lookup_tab:
 
 with outputs_tab:
     st.subheader("Scraped Outputs")
+    if "enriched_outputs_ready" not in st.session_state:
+        st.session_state.enriched_outputs_ready = False
     detected_names = identity_names_from_outputs()
     identity_lookup_exists = IDENTITY_LOOKUP_CSV.exists()
 
@@ -634,6 +630,9 @@ with outputs_tab:
         if not IDENTITY_LOOKUP_CSV.exists():
             st.error("Build the Gene/UniProt map before writing enriched CSV copies.")
         else:
+            st.session_state.enriched_outputs_ready = False
+            if IDENTITY_ENRICHED_ROOT.exists():
+                shutil.rmtree(IDENTITY_ENRICHED_ROOT)
             args = [
                 "--enrich-outputs",
                 "--output-root",
@@ -651,12 +650,13 @@ with outputs_tab:
             with st.spinner("Writing enriched output CSV copies..."):
                 code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity enrichment", summary_lines)
             if code == 0:
+                st.session_state.enriched_outputs_ready = True
                 st.success("Enriched output CSV copies written.")
             else:
                 st.warning("Output enrichment finished with errors. Check the log.")
 
     enriched_files = files_under(IDENTITY_ENRICHED_ROOT)
-    if enriched_files:
+    if st.session_state.enriched_outputs_ready and enriched_files:
         st.download_button(
             "Download Enriched Output ZIP",
             zip_files(enriched_files),
