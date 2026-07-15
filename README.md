@@ -140,6 +140,18 @@ Or resolve pasted names directly:
 
 The all-output mode scans every CSV under `--output-root` for `Protein`, `Downstream protein`, and `Upstream protein` columns, deduplicates every raw protein name it finds, then queries UniProt, HGNC, NCBI Gene, and Ensembl. It keeps both the raw scraped name and normalized identity fields such as `canonical_gene`, `uniprot_accession`, `recommended_name`, `aliases`, `confidence`, and `sources`.
 
+After the lookup table exists, write enriched copies of every scraper CSV:
+
+```bash
+.venv312/bin/python protein_identity_mapper.py \
+  --enrich-outputs \
+  --output-root . \
+  --lookup-csv curated_protein_ids/protein_identity_lookup.csv \
+  --enriched-root identity_enriched_outputs
+```
+
+The enriched CSVs preserve the original columns and add canonical gene, UniProt accession, confidence, and source columns for `Protein`, `Downstream protein`, and `Upstream protein`.
+
 ## Identity-First Scraper Evaluation
 
 Use `scraper_eval/` when you want to score actual scraper outputs against an expected manifest.

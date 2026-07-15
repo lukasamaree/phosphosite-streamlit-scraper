@@ -20,6 +20,7 @@ IDENTITY_MAPPER = ROOT / "protein_identity_mapper.py"
 CURATION_DIR = ROOT / "curated_protein_ids"
 LOOKUP_CSV = CURATION_DIR / "resolved_protein_ids.csv"
 IDENTITY_LOOKUP_CSV = CURATION_DIR / "protein_identity_lookup.csv"
+IDENTITY_ENRICHED_ROOT = ROOT / "identity_enriched_outputs"
 IDS_TXT = CURATION_DIR / "protein_ids.txt"
 AGENTIC_STATE_JSON = CURATION_DIR / "lookup_state.json"
 SCRAPE_STATE_JSON = CURATION_DIR / "scrape_state.json"
@@ -242,6 +243,13 @@ def zip_files(files):
             archive.write(path, arcname=str(path.relative_to(ROOT)))
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def files_under(root):
+    root = Path(root)
+    if not root.exists():
+        return []
+    return sorted([path for path in root.rglob("*") if path.is_file()])
 
 
 @st.cache_data(ttl=30)
@@ -549,6 +557,7 @@ with identity_tab:
     col_a, col_b = st.columns(2)
     build_from_outputs = col_a.button("Build For All Output Names", use_container_width=True)
     build_from_names = col_b.button("Build Only Pasted Names", use_container_width=True)
+    enrich_outputs_clicked = st.button("Enrich Output CSVs With Gene/UniProt Columns", use_container_width=True)
 
     if build_from_outputs or build_from_names:
         args = [
@@ -581,12 +590,49 @@ with identity_tab:
             else:
                 st.warning("Protein identity lookup finished with errors. Check the log.")
 
+    if enrich_outputs_clicked:
+        if not IDENTITY_LOOKUP_CSV.exists():
+            st.error("Build the protein identity lookup table before enriching outputs.")
+        else:
+            args = [
+                "--enrich-outputs",
+                "--output-root",
+                str(ROOT),
+                "--lookup-csv",
+                str(IDENTITY_LOOKUP_CSV),
+                "--enriched-root",
+                str(IDENTITY_ENRICHED_ROOT),
+            ]
+            summary_lines = [
+                f"Lookup CSV: {IDENTITY_LOOKUP_CSV}",
+                f"Enriched output root: {IDENTITY_ENRICHED_ROOT}",
+                "Adds canonical gene, UniProt, confidence, and source columns for Protein, Downstream protein, and Upstream protein.",
+            ]
+            with st.spinner("Writing enriched output CSV copies..."):
+                code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity enrichment", summary_lines)
+            if code == 0:
+                st.success("Enriched output CSVs written.")
+            else:
+                st.warning("Output enrichment finished with errors. Check the log.")
+
     if IDENTITY_LOOKUP_CSV.exists():
         identity_df = pd.read_csv(IDENTITY_LOOKUP_CSV)
         st.dataframe(identity_df, use_container_width=True, hide_index=True)
         dataframe_download(identity_df, "protein_identity_lookup.csv", "Download Identity Lookup CSV")
     else:
         st.info("Build the identity lookup table from outputs or pasted raw names.")
+
+    enriched_files = files_under(IDENTITY_ENRICHED_ROOT)
+    if enriched_files:
+        st.divider()
+        st.subheader("Enriched Output CSVs")
+        st.caption(f"{len(enriched_files)} enriched file(s) written under {IDENTITY_ENRICHED_ROOT.name}.")
+        st.download_button(
+            "Download Enriched Output ZIP",
+            zip_files(enriched_files),
+            file_name="phosphosite_identity_enriched_outputs.zip",
+            mime="application/zip",
+        )
 
 with outputs_tab:
     st.subheader("Scraped Outputs")

@@ -32,4 +32,5 @@ site_ids.txt
 !curated_protein_ids/protein_ids.txt
 curated_protein_ids/scrape_state.json
 curated_protein_ids/protein_identity_lookup_cache*.json
+identity_enriched_outputs/
 !scraper_eval/tests/fixtures/**/*.csv

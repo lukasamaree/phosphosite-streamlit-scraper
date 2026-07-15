@@ -15,6 +15,7 @@ CURATION_DIR = ROOT / "curated_protein_ids"
 DEFAULT_OUTPUT = CURATION_DIR / "protein_identity_lookup.csv"
 DEFAULT_CACHE = CURATION_DIR / "protein_identity_lookup_cache.json"
 DEFAULT_COLUMNS = ("Protein", "Downstream protein", "Upstream protein")
+DEFAULT_ENRICHED_ROOT = ROOT / "identity_enriched_outputs"
 HUMAN_ORGANISM_ID = "9606"
 
 
@@ -351,6 +352,103 @@ def write_rows(path, rows):
         writer.writerows(rows)
 
 
+def load_lookup_table(path):
+    lookup = {}
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            keys = [row.get("raw_name"), row.get("normalized_query"), row.get("canonical_gene")]
+            for alias in split_aliases(row.get("aliases")):
+                keys.append(alias)
+            for key in keys:
+                normalized_key = name_key(key)
+                if normalized_key and normalized_key not in lookup:
+                    lookup[normalized_key] = row
+    return lookup
+
+
+def lookup_identity(value, lookup):
+    normalized = normalize_name(value)
+    if not normalized:
+        return {}
+    return lookup.get(name_key(normalized), {})
+
+
+def add_identity_columns(row, source_column, lookup):
+    identity = lookup_identity(row.get(source_column), lookup)
+    prefix = re.sub(r"[^A-Za-z0-9]+", "_", source_column).strip("_").lower()
+    row[f"{prefix}_canonical_gene"] = identity.get("canonical_gene", "")
+    row[f"{prefix}_uniprot_accession"] = identity.get("uniprot_accession", "")
+    row[f"{prefix}_identity_confidence"] = identity.get("confidence", "")
+    row[f"{prefix}_identity_sources"] = identity.get("sources", "")
+
+
+def enrich_output_csv(input_path, output_path, lookup, columns=DEFAULT_COLUMNS):
+    with open(input_path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        fieldnames = list(reader.fieldnames or [])
+
+    available_columns = [column for column in columns if column in fieldnames]
+    added_fields = []
+    for column in available_columns:
+        prefix = re.sub(r"[^A-Za-z0-9]+", "_", column).strip("_").lower()
+        added_fields.extend(
+            [
+                f"{prefix}_canonical_gene",
+                f"{prefix}_uniprot_accession",
+                f"{prefix}_identity_confidence",
+                f"{prefix}_identity_sources",
+            ]
+        )
+
+    for row in rows:
+        for column in available_columns:
+            add_identity_columns(row, column, lookup)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=[*fieldnames, *added_fields])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return len(rows), len(available_columns)
+
+
+def enrich_outputs(output_root, lookup_csv, enriched_root=DEFAULT_ENRICHED_ROOT, columns=DEFAULT_COLUMNS):
+    output_root = Path(output_root)
+    enriched_root = Path(enriched_root)
+    lookup = load_lookup_table(lookup_csv)
+    summaries = []
+    for input_path in output_root.rglob("*.csv"):
+        if any(part.startswith(".") or part == "__pycache__" for part in input_path.parts):
+            continue
+        if input_path.resolve() == Path(lookup_csv).resolve():
+            continue
+        if enriched_root in input_path.parents:
+            continue
+        try:
+            with open(input_path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+                reader = csv.DictReader(handle)
+                fieldnames = reader.fieldnames or []
+            if not any(column in fieldnames for column in columns):
+                continue
+            relative = input_path.relative_to(output_root)
+            output_path = enriched_root / relative
+            rows, matched_columns = enrich_output_csv(input_path, output_path, lookup, columns)
+            summaries.append(
+                {
+                    "input_file": str(input_path),
+                    "output_file": str(output_path),
+                    "rows": rows,
+                    "identity_columns_matched": matched_columns,
+                }
+            )
+        except Exception as exc:
+            summaries.append({"input_file": str(input_path), "error": str(exc)})
+    return summaries
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Build a canonical gene/UniProt lookup table for PhosphoSitePlus protein names.")
     parser.add_argument("--names", nargs="+", help="Raw protein names to resolve.")
@@ -365,11 +463,31 @@ def build_parser():
     parser.add_argument("--output-csv", default=str(DEFAULT_OUTPUT), help="Lookup CSV to write.")
     parser.add_argument("--cache-json", default=str(DEFAULT_CACHE), help="API result cache JSON.")
     parser.add_argument("--refresh-cache", action="store_true", help="Ignore cached resolved names.")
+    parser.add_argument("--enrich-outputs", action="store_true", help="Add canonical gene/UniProt columns to scraper output CSVs.")
+    parser.add_argument("--lookup-csv", default=str(DEFAULT_OUTPUT), help="Identity lookup CSV used by --enrich-outputs.")
+    parser.add_argument("--enriched-root", default=str(DEFAULT_ENRICHED_ROOT), help="Directory for enriched CSV copies.")
     return parser
 
 
 def main():
     args = build_parser().parse_args()
+    if args.enrich_outputs:
+        summaries = enrich_outputs(args.output_root, args.lookup_csv, args.enriched_root, args.columns)
+        print(f"IDENTITY_ENRICH: wrote {len([row for row in summaries if 'output_file' in row])} enriched CSV file(s)", flush=True)
+        print(
+            "IDENTITY_ENRICH_JSON: "
+            + json.dumps(
+                {
+                    "files": len([row for row in summaries if "output_file" in row]),
+                    "errors": len([row for row in summaries if "error" in row]),
+                    "enriched_root": str(Path(args.enriched_root).resolve()),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return
+
     names = []
     if args.names:
         names.extend(args.names)
