@@ -209,7 +209,7 @@ def write_ids_file(ids, path=IDS_TXT):
 
 @st.cache_data(ttl=30)
 def output_files():
-    ignored = {".git", ".venv", "__pycache__"}
+    ignored = {".git", ".venv", "__pycache__", "curated_protein_ids", "identity_enriched_outputs"}
     files = []
     for path in ROOT.rglob("*.csv"):
         relative = path.relative_to(ROOT)
@@ -268,6 +268,16 @@ def read_identity_lookup(path):
 
 
 def enrich_dataframe_with_identity(df, lookup):
+    identity_columns = [
+        column
+        for column in df.columns
+        if column.endswith("_canonical_gene")
+        or column.endswith("_uniprot_accession")
+        or column.endswith("_identity_confidence")
+        or column.endswith("_identity_sources")
+    ]
+    if identity_columns:
+        df = df.drop(columns=identity_columns)
     if not lookup:
         return df
     enriched = df.copy()
