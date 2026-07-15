@@ -355,6 +355,11 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Build a canonical gene/UniProt lookup table for PhosphoSitePlus protein names.")
     parser.add_argument("--names", nargs="+", help="Raw protein names to resolve.")
     parser.add_argument("--names-file", help="Text file with one raw protein name per line.")
+    parser.add_argument(
+        "--all-from-outputs",
+        action="store_true",
+        help="Scan every output CSV under --output-root for Protein, Downstream protein, and Upstream protein values.",
+    )
     parser.add_argument("--output-root", default=str(ROOT), help="Scraper output root to scan for CSV protein columns.")
     parser.add_argument("--columns", nargs="+", default=list(DEFAULT_COLUMNS), help="CSV columns to scan.")
     parser.add_argument("--output-csv", default=str(DEFAULT_OUTPUT), help="Lookup CSV to write.")
@@ -370,8 +375,10 @@ def main():
         names.extend(args.names)
     if args.names_file:
         names.extend(read_names_file(args.names_file))
-    if not names:
-        names.extend(collect_names_from_outputs(args.output_root, args.columns))
+    if args.all_from_outputs or not names:
+        output_names = collect_names_from_outputs(args.output_root, args.columns)
+        print(f"IDENTITY_LOOKUP: found {len(output_names)} unique raw protein name(s) in output CSVs", flush=True)
+        names.extend(output_names)
     names = unique_ordered(names)
     if not names:
         raise SystemExit("No protein names found.")
@@ -384,7 +391,19 @@ def main():
     resolved = sum(1 for row in rows if row["match_status"] == "resolved")
     print(f"IDENTITY_LOOKUP: wrote {len(rows)} row(s) to {args.output_csv}", flush=True)
     print(f"IDENTITY_LOOKUP: resolved={resolved}, unresolved={len(rows) - resolved}", flush=True)
-    print("IDENTITY_LOOKUP_JSON: " + json.dumps({"rows": len(rows), "resolved": resolved, "output_csv": str(Path(args.output_csv).resolve())}, sort_keys=True), flush=True)
+    print(
+        "IDENTITY_LOOKUP_JSON: "
+        + json.dumps(
+            {
+                "rows": len(rows),
+                "resolved": resolved,
+                "unresolved": len(rows) - resolved,
+                "output_csv": str(Path(args.output_csv).resolve()),
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

@@ -244,6 +244,13 @@ def zip_files(files):
     return buffer.getvalue()
 
 
+@st.cache_data(ttl=30)
+def identity_names_from_outputs():
+    from protein_identity_mapper import collect_names_from_outputs
+
+    return collect_names_from_outputs(ROOT)
+
+
 st.title("PhosphoSitePlus Scraper Dashboard")
 st.caption(
     "Human-only workflow: search protein name, navigate to the human protein page, "
@@ -523,16 +530,25 @@ with lookup_tab:
 
 with identity_tab:
     st.subheader("Protein Identity Lookup")
-    st.caption("Map raw PhosphoSite protein names to canonical human gene symbols and UniProt accessions.")
+    st.caption(
+        "Map every unique raw PhosphoSite protein name in scraper outputs to canonical human gene symbols "
+        "and UniProt accessions."
+    )
 
     identity_names_text = st.text_area(
-        "Optional raw protein names",
+        "Optional raw protein names for a targeted lookup",
         height=120,
         placeholder="Akt1\nMDM2\nTRAF6\nDRD2\nDRD3\nKPNB1",
     )
+    detected_names = identity_names_from_outputs()
+    st.caption(f"{len(detected_names)} unique raw protein name(s) found across all output CSVs.")
+    if detected_names:
+        with st.expander("Preview detected output names"):
+            st.dataframe(pd.DataFrame({"raw_name": detected_names}), use_container_width=True, hide_index=True)
+
     col_a, col_b = st.columns(2)
-    build_from_outputs = col_a.button("Build From Output CSVs", use_container_width=True)
-    build_from_names = col_b.button("Build From Pasted Names", use_container_width=True)
+    build_from_outputs = col_a.button("Build For All Output Names", use_container_width=True)
+    build_from_names = col_b.button("Build Only Pasted Names", use_container_width=True)
 
     if build_from_outputs or build_from_names:
         args = [
@@ -544,8 +560,11 @@ with identity_tab:
         summary_lines = [
             f"Output CSV: {IDENTITY_LOOKUP_CSV}",
             "Sources: UniProt, HGNC, NCBI Gene, Ensembl",
-            "Columns scanned: Protein, Downstream protein, Upstream protein",
+            "Columns scanned across all CSVs: Protein, Downstream protein, Upstream protein",
         ]
+        if build_from_outputs:
+            args.append("--all-from-outputs")
+            summary_lines.insert(0, f"All-output mode: {len(detected_names)} unique raw name(s) detected")
         if build_from_names:
             names = unique_names(parse_protein_text(identity_names_text))
             if not names:
