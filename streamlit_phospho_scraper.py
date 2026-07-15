@@ -323,6 +323,31 @@ def enrich_dataframe_with_identity(df, lookup):
     return enriched
 
 
+def clear_impossible_identity_values(df):
+    cleaned = df.copy()
+    for source_column in DEFAULT_COLUMNS:
+        prefix = source_column.lower().replace(" ", "_")
+        required_columns = [
+            f"{prefix}_canonical_gene",
+            f"{prefix}_uniprot_accession",
+            f"{prefix}_identity_confidence",
+            f"{prefix}_identity_sources",
+        ]
+        if source_column not in cleaned.columns:
+            continue
+        existing_identity_columns = [column for column in required_columns if column in cleaned.columns]
+        if not existing_identity_columns:
+            continue
+        blank_source = cleaned[source_column].fillna("").astype(str).str.strip().eq("")
+        cleaned.loc[blank_source, existing_identity_columns] = ""
+    return cleaned
+
+
+def prepare_output_dataframe(df, lookup):
+    prepared = enrich_dataframe_with_identity(df, lookup)
+    return clear_impossible_identity_values(prepared)
+
+
 def zip_files(files):
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -741,10 +766,10 @@ with outputs_tab:
             preview_path = ROOT / selected_file
             preview_df = pd.read_csv(preview_path)
             identity_lookup = read_identity_lookup(IDENTITY_LOOKUP_CSV)
+            preview_df = prepare_output_dataframe(preview_df, identity_lookup)
             if identity_lookup:
-                preview_df = enrich_dataframe_with_identity(preview_df, identity_lookup)
                 st.caption("Preview/download includes canonical gene and UniProt columns from the identity lookup table.")
             else:
                 st.caption("Build the Identity Lookup table to add canonical gene and UniProt columns to downloads.")
-            st.dataframe(preview_df, use_container_width=True)
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
             dataframe_download(preview_df, preview_path.name, "Download Selected CSV")
