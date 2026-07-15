@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from protein_identity_mapper import DEFAULT_COLUMNS, add_identity_columns, load_lookup_table
 
 
 ROOT = Path(__file__).resolve().parent
@@ -234,6 +235,28 @@ def dataframe_download(df, filename, label):
     buffer = io.StringIO()
     df.to_csv(buffer, index=False)
     st.download_button(label, buffer.getvalue(), file_name=filename, mime="text/csv")
+
+
+@st.cache_data(ttl=30)
+def read_identity_lookup(path):
+    if not Path(path).exists():
+        return None
+    return load_lookup_table(path)
+
+
+def enrich_dataframe_with_identity(df, lookup):
+    if not lookup:
+        return df
+    enriched = df.copy()
+    for column in DEFAULT_COLUMNS:
+        if column not in enriched.columns:
+            continue
+        rows = []
+        for row in enriched.to_dict(orient="records"):
+            add_identity_columns(row, column, lookup)
+            rows.append(row)
+        enriched = pd.DataFrame(rows)
+    return enriched
 
 
 def zip_files(files):
@@ -679,5 +702,11 @@ with outputs_tab:
             selected_file = st.selectbox("Preview CSV", filtered["file"].tolist())
             preview_path = ROOT / selected_file
             preview_df = pd.read_csv(preview_path)
+            identity_lookup = read_identity_lookup(IDENTITY_LOOKUP_CSV)
+            if identity_lookup:
+                preview_df = enrich_dataframe_with_identity(preview_df, identity_lookup)
+                st.caption("Preview/download includes canonical gene and UniProt columns from the identity lookup table.")
+            else:
+                st.caption("Build the Identity Lookup table to add canonical gene and UniProt columns to downloads.")
             st.dataframe(preview_df, use_container_width=True)
             dataframe_download(preview_df, preview_path.name, "Download Selected CSV")
