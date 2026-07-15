@@ -3,7 +3,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from protein_identity_mapper import best_ncbi_doc, collect_names_from_outputs, enrich_outputs, normalize_name
+from protein_identity_mapper import (
+    best_ncbi_doc,
+    collect_names_from_outputs,
+    enrich_outputs,
+    is_probable_protein_token,
+    normalize_name,
+)
 
 
 class ProteinIdentityMapperTests(unittest.TestCase):
@@ -51,6 +57,12 @@ class ProteinIdentityMapperTests(unittest.TestCase):
 
         self.assertEqual(best_ncbi_doc("MDM2", docs)["name"], "MDM2")
         self.assertEqual(best_ncbi_doc("Akt1", docs), {})
+
+    def test_rejects_relationship_text_as_protein_token(self):
+        self.assertFalse(is_probable_protein_token("Effects of modification on Akt1"))
+        self.assertFalse(is_probable_protein_token("Regulatory protein"))
+        self.assertTrue(is_probable_protein_token("Akt1"))
+        self.assertTrue(is_probable_protein_token("KPNB1"))
 
     def test_enrich_outputs_adds_gene_and_uniprot_columns(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,6 +118,63 @@ class ProteinIdentityMapperTests(unittest.TestCase):
         self.assertEqual(row["downstream_protein_uniprot_accession"], "Q00987")
         self.assertEqual(row["upstream_protein_canonical_gene"], "DRD2")
         self.assertEqual(row["upstream_protein_uniprot_accession"], "P14416")
+
+    def test_enrich_outputs_leaves_blank_or_non_protein_cells_blank(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "Akt1"
+            output_dir.mkdir()
+            input_csv = output_dir / "site.csv"
+            lookup_csv = root / "protein_identity_lookup.csv"
+            enriched_root = root / "enriched"
+
+            with open(input_csv, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["Protein", "Downstream protein", "Upstream protein"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "Protein": "Akt1",
+                        "Downstream protein": "Effects of modification on Akt1",
+                        "Upstream protein": "",
+                    }
+                )
+
+            with open(lookup_csv, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "raw_name",
+                        "normalized_query",
+                        "canonical_gene",
+                        "uniprot_accession",
+                        "recommended_name",
+                        "organism",
+                        "aliases",
+                        "confidence",
+                        "match_status",
+                        "sources",
+                        "hgnc_id",
+                        "ncbi_gene_id",
+                        "ensembl_gene_id",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow({"raw_name": "Akt1", "canonical_gene": "AKT1", "uniprot_accession": "P31749", "confidence": "high", "sources": "UniProt", "aliases": "Akt1"})
+                writer.writerow({"raw_name": "SCN11A", "canonical_gene": "SCN11A", "uniprot_accession": "Q9UKU5", "confidence": "high", "sources": "UniProt", "aliases": "Effects of modification on Akt1"})
+
+            enrich_outputs(root, lookup_csv, enriched_root)
+            enriched_csv = enriched_root / "Akt1" / "site.csv"
+            with open(enriched_csv, "r", encoding="utf-8", newline="") as handle:
+                row = next(csv.DictReader(handle))
+
+        self.assertEqual(row["protein_canonical_gene"], "AKT1")
+        self.assertEqual(row["downstream_protein_canonical_gene"], "")
+        self.assertEqual(row["downstream_protein_uniprot_accession"], "")
+        self.assertEqual(row["upstream_protein_canonical_gene"], "")
+        self.assertEqual(row["upstream_protein_uniprot_accession"], "")
 
 
 if __name__ == "__main__":

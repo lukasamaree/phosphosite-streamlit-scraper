@@ -17,6 +17,19 @@ DEFAULT_CACHE = CURATION_DIR / "protein_identity_lookup_cache.json"
 DEFAULT_COLUMNS = ("Protein", "Downstream protein", "Upstream protein")
 DEFAULT_ENRICHED_ROOT = ROOT / "identity_enriched_outputs"
 HUMAN_ORGANISM_ID = "9606"
+NON_PROTEIN_PHRASES = (
+    "effect of",
+    "effects of",
+    "induce ",
+    "inhibit ",
+    "regulatory ",
+    "regulation ",
+    "phosphorylation ",
+    "ubiquitination ",
+    "intracellular localization",
+    "molecular association",
+    "receptor desensitization",
+)
 
 
 def normalize_name(value):
@@ -25,6 +38,22 @@ def normalize_name(value):
     text = re.sub(r"\biso\d+\b", "", text, flags=re.I)
     text = re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip(" ,;")
     return text
+
+
+def is_probable_protein_token(value):
+    text = normalize_name(value)
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in NON_PROTEIN_PHRASES):
+        return False
+    if len(text) > 40:
+        return False
+    if "," in text or ";" in text or ":" in text:
+        return False
+    if len(text.split()) > 3:
+        return False
+    return bool(re.search(r"[A-Za-z0-9]", text))
 
 
 def name_key(value):
@@ -306,7 +335,7 @@ def collect_names_from_outputs(root, columns=DEFAULT_COLUMNS):
                 for row in reader:
                     for field in selected_fields:
                         value = normalize_name(row.get(field))
-                        if value:
+                        if is_probable_protein_token(value):
                             names.append(value)
         except Exception:
             continue
@@ -358,8 +387,6 @@ def load_lookup_table(path):
         reader = csv.DictReader(handle)
         for row in reader:
             keys = [row.get("raw_name"), row.get("normalized_query"), row.get("canonical_gene")]
-            for alias in split_aliases(row.get("aliases")):
-                keys.append(alias)
             for key in keys:
                 normalized_key = name_key(key)
                 if normalized_key and normalized_key not in lookup:
@@ -369,7 +396,7 @@ def load_lookup_table(path):
 
 def lookup_identity(value, lookup):
     normalized = normalize_name(value)
-    if not normalized:
+    if not is_probable_protein_token(normalized):
         return {}
     return lookup.get(name_key(normalized), {})
 
