@@ -149,6 +149,29 @@ def stream_command(script_path, args, label, summary_lines=None):
     return return_code, output
 
 
+def build_identity_map_from_outputs(detected_names=None):
+    if detected_names is None:
+        detected_names = identity_names_from_outputs()
+    args = [
+        "--all-from-outputs",
+        "--output-csv",
+        str(IDENTITY_LOOKUP_CSV),
+        "--cache-json",
+        str(CURATION_DIR / "protein_identity_lookup_cache.json"),
+    ]
+    summary_lines = [
+        f"All-output mode: {len(detected_names)} unique raw name(s) detected",
+        f"Output CSV: {IDENTITY_LOOKUP_CSV}",
+        "Sources: UniProt, HGNC, NCBI Gene, Ensembl",
+        "Columns scanned across all CSVs: Protein, Downstream protein, Upstream protein",
+    ]
+    code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity lookup", summary_lines)
+    if code == 0:
+        read_identity_lookup.clear()
+        identity_names_from_outputs.clear()
+    return code, output
+
+
 def read_lookup_csv(path=LOOKUP_CSV):
     if not path.exists():
         return pd.DataFrame(columns=["protein_name", "protein_id", "url", "organism", "source"])
@@ -529,6 +552,12 @@ with run_tab:
 
                 if code == 0:
                     st.success("Scrape completed.")
+                    with st.spinner("Adding canonical gene and UniProt columns to output downloads..."):
+                        identity_code, identity_output = build_identity_map_from_outputs()
+                    if identity_code == 0:
+                        st.success("Gene/UniProt map refreshed. Output CSV downloads are enriched automatically.")
+                    else:
+                        st.warning("Scrape completed, but identity enrichment had errors. Use the Outputs tab to retry.")
                 else:
                     st.warning("Scrape finished with errors. Check the log for failed IDs.")
 
@@ -584,23 +613,9 @@ with outputs_tab:
     )
 
     if build_identity_clicked:
-        args = [
-            "--all-from-outputs",
-            "--output-csv",
-            str(IDENTITY_LOOKUP_CSV),
-            "--cache-json",
-            str(CURATION_DIR / "protein_identity_lookup_cache.json"),
-        ]
-        summary_lines = [
-            f"All-output mode: {len(detected_names)} unique raw name(s) detected",
-            f"Output CSV: {IDENTITY_LOOKUP_CSV}",
-            "Sources: UniProt, HGNC, NCBI Gene, Ensembl",
-            "Columns scanned across all CSVs: Protein, Downstream protein, Upstream protein",
-        ]
         with st.spinner("Building canonical gene/UniProt map from output CSVs..."):
-            code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity lookup", summary_lines)
+            code, output = build_identity_map_from_outputs(detected_names)
         if code == 0:
-            read_identity_lookup.clear()
             st.success("Gene/UniProt map built. Downloads from this tab will include identity columns.")
         else:
             st.warning("Gene/UniProt map finished with errors. Check the log.")
