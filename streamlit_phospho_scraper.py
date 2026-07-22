@@ -105,7 +105,7 @@ def run_agentic_command(args, timeout=None):
     return completed.returncode, output
 
 
-def stream_command(script_path, args, label, summary_lines=None):
+def stream_command(script_path, args, label, summary_lines=None, needs_browser=True):
     command = [sys.executable, "-u", "-B", str(script_path), *args]
     status_box = st.empty()
     log_box = st.empty()
@@ -122,9 +122,10 @@ def stream_command(script_path, args, label, summary_lines=None):
     add_log(f"{label}: preparing subprocess")
     for summary_line in summary_lines or []:
         add_log(summary_line)
-    add_log("Checking Playwright Chromium before scraper run")
-    playwright_status = ensure_playwright_browser()
-    add_log(f"Playwright Chromium: {playwright_status}")
+    if needs_browser:
+        add_log("Checking Playwright Chromium before scraper run")
+        playwright_status = ensure_playwright_browser()
+        add_log(f"Playwright Chromium: {playwright_status}")
     add_log("Command: " + " ".join(shlex.quote(part) for part in command))
     process = subprocess.Popen(
         command,
@@ -167,7 +168,7 @@ def build_identity_map_from_outputs(detected_names=None):
         "Sources: UniProt, HGNC, NCBI Gene, Ensembl",
         "Columns scanned across all CSVs: Protein, Downstream protein, Upstream protein",
     ]
-    code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity lookup", summary_lines)
+    code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity lookup", summary_lines, needs_browser=False)
     if code == 0:
         read_identity_lookup.clear()
         identity_names_from_outputs.clear()
@@ -192,7 +193,7 @@ def write_enriched_output_copies():
         "Deletes stale enriched files, then writes clean enriched CSV copies from raw scraper outputs.",
         "Adds canonical gene, UniProt, confidence, and source columns for Protein, Downstream protein, and Upstream protein.",
     ]
-    code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity enrichment", summary_lines)
+    code, output = stream_command(IDENTITY_MAPPER, args, "Protein identity enrichment", summary_lines, needs_browser=False)
     if code == 0:
         IDENTITY_ENRICHED_ROOT.mkdir(exist_ok=True)
         with open(IDENTITY_ENRICHED_READY_JSON, "w", encoding="utf-8") as handle:

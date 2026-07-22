@@ -223,13 +223,17 @@ def confidence_for(query, canonical_gene, uniprot_accession, aliases, sources):
     return "low"
 
 
-def resolve_identity(raw_name, cache=None, sleep_seconds=0.1):
+def resolve_identity(raw_name, cache=None, sleep_seconds=0.1, log=None):
     normalized_query = normalize_name(raw_name)
     cache = cache if cache is not None else {}
     cache_key = normalized_query.lower()
     if cache_key in cache:
+        if log:
+            log(f"cache hit for {normalized_query}")
         return cache[cache_key]
 
+    if log:
+        log(f"querying UniProt, HGNC, NCBI Gene, and Ensembl for {normalized_query}")
     uniprot_payload = uniprot_query(normalized_query)
     hgnc_docs = hgnc_query(normalized_query)
     ncbi_docs = ncbi_gene_query(normalized_query)
@@ -316,6 +320,13 @@ def resolve_identity(raw_name, cache=None, sleep_seconds=0.1):
         "ensembl_gene_id": ensembl_gene_id,
     }
     cache[cache_key] = result
+    if log:
+        log(
+            "resolved "
+            f"{normalized_query}: status={result['match_status']}, "
+            f"gene={canonical_gene or '-'}, uniprot={uniprot_accession or '-'}, "
+            f"sources={';'.join(sources) or '-'}, confidence={confidence}"
+        )
     if sleep_seconds:
         time.sleep(sleep_seconds)
     return result
@@ -544,7 +555,32 @@ def main():
         raise SystemExit("No protein names found.")
 
     cache = load_cache(args.cache_json, args.refresh_cache)
-    rows = [resolve_identity(name, cache=cache) for name in names]
+    cached_before = sum(1 for name in names if normalize_name(name).lower() in cache)
+    print(
+        f"IDENTITY_LOOKUP: resolving {len(names)} unique protein name(s); "
+        f"{cached_before} already cached, {len(names) - cached_before} need network lookup",
+        flush=True,
+    )
+    rows = []
+    started_at = time.monotonic()
+    for index, name in enumerate(names, start=1):
+        normalized_name = normalize_name(name)
+        print(f"IDENTITY_LOOKUP: [{index}/{len(names)}] START {normalized_name}", flush=True)
+
+        def log_progress(message):
+            print(f"IDENTITY_LOOKUP: [{index}/{len(names)}] {message}", flush=True)
+
+        row = resolve_identity(name, cache=cache, log=log_progress)
+        rows.append(row)
+        elapsed = time.monotonic() - started_at
+        resolved_so_far = sum(1 for item in rows if item["match_status"] == "resolved")
+        print(
+            f"IDENTITY_LOOKUP: [{index}/{len(names)}] DONE {normalized_name}: "
+            f"{row['match_status']} gene={row.get('canonical_gene') or '-'} "
+            f"uniprot={row.get('uniprot_accession') or '-'} "
+            f"({resolved_so_far}/{len(rows)} resolved so far, elapsed={elapsed:.1f}s)",
+            flush=True,
+        )
     write_rows(args.output_csv, rows)
     save_cache(args.cache_json, cache)
 
